@@ -1,4 +1,4 @@
-cmake_minimum_required (VERSION 2.6)
+cmake_minimum_required (VERSION 3.10)
 
 find_program(ABI_COMPLIANCE_CHECKER abi-compliance-checker)
 if (NOT ABI_COMPLIANCE_CHECKER)
