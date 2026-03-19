@@ -45,11 +45,7 @@ function(make_lib_descriptor name)
     set(LIB_DESC_HEADERS ${library_header})
   endif()
 
-  # FIXME: Property "LOCATION" is now deprecated
-  if (NOT ${CMAKE_MAJOR_VERSION} LESS 3)
-    cmake_policy(SET CMP0026 OLD)
-  endif()
-  get_property(LIB_DESC_LIBS TARGET ${libname} PROPERTY LOCATION)
+  set(LIB_DESC_LIBS "$<TARGET_FILE:${libname}>")
     
   get_includes(${libname} LIB_DESC_INCLUDE_PATHS)
   set(LIB_DESC_GCC_OPTS "${CMAKE_CXX_FLAGS}")
