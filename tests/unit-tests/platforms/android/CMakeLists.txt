@@ -29,6 +29,10 @@ mir_add_wrapped_executable(mir_unit_tests_android2
   $<TARGET_OBJECTS:mirgl>
 )
 
+# Export all symbols to dynamic symbol table so that dlsym(RTLD_DEFAULT, "main")
+# works correctly in RefCountedLibrary, preventing it from trying to dlopen the PIE executable
+target_link_options(mir_unit_tests_android2 PRIVATE -rdynamic)
+
 add_dependencies(mir_unit_tests_android2 GMock)
 
 # Get the GTest version from pkg-config file to let server/test_hwc_fallback_gl_renderer.cpp
