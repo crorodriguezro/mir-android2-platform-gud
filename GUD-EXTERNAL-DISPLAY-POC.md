@@ -58,6 +58,9 @@ layout for every client, acceptable performance, or reconnect support.
 
 The canonical cross-repository board is `../gud/PROJECT-STATUS.md`. Copy these
 IDs unchanged into commits, logs, and issue discussions.
+Future cross-repository specifications and plans follow
+`../gud/docs/superpowers/CROSS-REPOSITORY-WORKFLOW.md`; this document remains
+the POC-specific record rather than a duplicate project plan.
 
 | ID | State | Owner | Next result required |
 | --- | --- | --- | --- |
