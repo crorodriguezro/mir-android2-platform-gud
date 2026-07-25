@@ -166,6 +166,7 @@ pkg_search_module(MIRRENDERER REQUIRED mir1renderer mirrenderer)
 pkg_search_module(MIRSERVER REQUIRED mir1server mirserver)
 pkg_check_modules(WAYLAND_SERVER REQUIRED wayland-server)
 pkg_check_modules(DEVICEINFO REQUIRED deviceinfo)
+pkg_check_modules(DRM REQUIRED libdrm)
 
 if (MIRCORE_MODULE_NAME STREQUAL "mir1core")
   set(MIR_LIB_PATH ${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}/mir1)

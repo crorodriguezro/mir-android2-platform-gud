@@ -24,6 +24,7 @@
 #include "framebuffer_bundle.h"
 #include "buffer.h"
 #include "hwc_fallback_gl_renderer.h"
+#include "gud_output.h"
 #include "mir/raii.h"
 #include <limits>
 #include <algorithm>
@@ -143,6 +144,9 @@ void mga::HwcDevice::commit(std::list<DisplayContents> const& contents)
             }
         }
     }
+
+    /* HWC ignores the synthetic external slot; submit it to GUD instead. */
+    mga::GudOutput::present_external(contents);
 
     hwc_wrapper->set(contents);
     onscreen_overlay_buffers = std::move(next_onscreen_overlay_buffers);

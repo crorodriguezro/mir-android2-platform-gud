@@ -23,6 +23,7 @@ add_library(mirplatformgraphicsandroidobjects OBJECT
   fb_device.cpp
   interpreter_cache.cpp
   gl_context.cpp
+  gud_output.cpp
   device_quirks.cpp
   real_hwc_wrapper.cpp
   real_hwc2_wrapper.cpp
@@ -46,6 +47,7 @@ target_include_directories(mirplatformgraphicsandroidobjects PRIVATE SYSTEM
     ${HYBRIS_EGL_PLATFORM_INCLUDE_DIRS}
     ${HWC2_INCLUDE_DIRS}
     ${WAYLAND_SERVER_INCLUDE_DIRS}
+    ${DRM_INCLUDE_DIRS}
 )
 
 target_compile_options(mirplatformgraphicsandroidobjects PRIVATE -fpermissive -Wno-error)
@@ -72,6 +74,7 @@ target_link_libraries(
   ${ANDROID_PROPERTIES_LDFLAGS}
   ${WAYLAND_SERVER_LDFLAGS} ${WAYLAND_SERVER_LIBRARIES}
   ${DEVICEINFO_LDFLAGS} ${DEVICEINFO_LIBRARIES}
+  ${DRM_LDFLAGS} ${DRM_LIBRARIES}
 )
 
 set_target_properties(

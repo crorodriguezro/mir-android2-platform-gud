@@ -27,6 +27,7 @@
 #include <stdexcept>
 #include <system_error>
 #include <chrono>
+#include <unistd.h>
 #include <deviceinfo/deviceinfo.h>
 
 #define MIR_LOG_COMPONENT "android/server"
@@ -98,6 +99,7 @@ mga::HwcBlankingControl::HwcBlankingControl(
     off{false},
     format(determine_hwc_fb_format())
 {
+    gud_external = ::access("/dev/dri/card1", R_OK | W_OK) == 0;
 }
 
 mga::HwcBlankingControl::HwcBlankingControl(
@@ -107,10 +109,13 @@ mga::HwcBlankingControl::HwcBlankingControl(
     off{false},
     format{format}
 {
+    gud_external = ::access("/dev/dri/card1", R_OK | W_OK) == 0;
 }
 
 void mga::HwcBlankingControl::power_mode(DisplayName display_name, MirPowerMode mode_request)
 {
+    if (gud_external && display_name == mga::DisplayName::external)
+        return;
     if (mode_request == mir_power_mode_on)
     {
         hwc_device->display_on(display_name);
@@ -258,6 +263,10 @@ mga::ConfigChangeSubscription subscribe_to_config_changes(
 
 mg::DisplayConfigurationOutput mga::HwcBlankingControl::active_config_for(DisplayName display_name)
 {
+    if (gud_external && display_name == mga::DisplayName::external)
+        return populate_config(display_name, {1280, 720}, 60.0, {0, 0},
+                               mir_power_mode_off, format, true);
+
     auto configs = hwc_device->display_configs(display_name);
     if (configs.empty())
     {
@@ -283,10 +292,13 @@ mga::HwcPowerModeControl::HwcPowerModeControl(
     hwc_device{hwc_device},
     format(determine_hwc_fb_format())
 {
+    gud_external = ::access("/dev/dri/card1", R_OK | W_OK) == 0;
 }
 
 void mga::HwcPowerModeControl::power_mode(DisplayName display_name, MirPowerMode mode_request)
 {
+    if (gud_external && display_name == mga::DisplayName::external)
+        return;
     PowerMode mode;
     switch (mode_request)
     {
@@ -316,6 +328,9 @@ void mga::HwcPowerModeControl::power_mode(DisplayName display_name, MirPowerMode
 
 mg::DisplayConfigurationOutput mga::HwcPowerModeControl::active_config_for(DisplayName display_name)
 {
+    if (gud_external && display_name == mga::DisplayName::external)
+        return populate_config(display_name, {1280, 720}, 60.0, {0, 0},
+                               mir_power_mode_off, format, true);
     auto configs = hwc_device->display_configs(display_name);
     if (configs.empty())
     {

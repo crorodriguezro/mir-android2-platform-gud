@@ -40,7 +40,8 @@ Build-Depends: cmake,
                libumockdev-dev (>= 0.6),
                umockdev (>= 0.8.7),
                libwayland-dev,
-               libdeviceinfo-dev
+               libdeviceinfo-dev,
+               libdrm-dev
 Standards-Version: 3.9.4
 Homepage: https://gitlab.com/ubports/development/core/hybris-support/mir-android2-platform
 Vcs-Git: https://gitlab.com/ubports/development/core/hybris-support/mir-android2-platform.git
