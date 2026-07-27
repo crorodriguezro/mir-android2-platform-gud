@@ -262,3 +262,29 @@ the expected post-reboot host module state; it does not run P0.2 presentation.
 The normal module is not qualified for P0.2 payload work because it lacks the
 separately verified <=12,800-byte adaptive transfer path. Evidence is at
 `../gud/backport-4.9/env/local/evidence/xdisp-p0.2-normal-gud-recovery-2026-07-27T1322COT/`.
+
+## 2026-07-27 synthetic-output fence boundary
+
+After a clean post-reboot packaged baseline, the 1920x1080 separately named
+bounded GUD diagnostic module and `20e54b0` reproduced the phone health failure
+while its worker counters still showed bounded active/pending frames and normal
+coalescing. Compositor sync-file FDs rose with submitted external frames until
+the 1024 descriptor limit, then binder `-12` and KGSL `-24` failures occurred.
+The Pi received only bounded payloads (shown maximum 12,157 bytes) and returned
+each shown receive to Idle.
+
+Source tracing proved that the synthetic output was excluded from Android HWC
+but still armed an Android acquire fence through `LayerList::swap_occurred()`;
+no HWC `set()` consumer could close it. Commit `1f9e8db` prevents acquire-fence
+arming for that synthetic sink while preserving primary and virtual HWC paths.
+Its compatible artifact SHA-256 is
+`b259a04b5f891b97d367ff9ca1d37cd076e5b8d277adf77c3981b223a8d009b4` and six
+focused tests pass.
+
+The fixed hardware retry no longer exhausted FDs or produced binder/KGSL errors,
+but plateaued at 674 FDs/574 sync files, far above the 90-FD control. This is a
+separate unproven fence-retention path, likely before HWC layer handling, and
+blocks acceptance. The packaged plugin and normal GUD module were restored;
+the Pi remained active/configured with Idle receives. Details are retained at
+`../gud/backport-4.9/env/local/evidence/xdisp-p0.2-fence-boundary-2026-07-27T1333COT/`.
+P0.2 remains **in progress**.
