@@ -146,6 +146,27 @@ TEST_F(ServerRenderWindow, clears_fence_when_quirk_present)
     Mock::VerifyAndClearExpectations(mock_fb_bundle.get());
 }
 
+TEST_F(ServerRenderWindow, clears_fence_for_synthetic_external_output)
+{
+    using namespace testing;
+    auto stub_buffer = std::make_shared<mtd::StubAndroidNativeBuffer>();
+    mga::ServerRenderWindow external_window{
+        mock_fb_bundle, format, mock_cache, quirks, true, mga::DisplayName::external};
+
+    EXPECT_CALL(*mock_fb_bundle, buffer_for_render())
+        .WillOnce(Return(mock_buffer));
+    EXPECT_CALL(*mock_buffer, native_buffer_handle())
+        .WillOnce(Return(stub_buffer));
+    external_window.driver_requests_buffer(-1);
+    Mock::VerifyAndClearExpectations(mock_fb_bundle.get());
+
+    EXPECT_CALL(*mock_cache, update_native_fence(_, _)).Times(0);
+    EXPECT_CALL(*mock_cache, retrieve_buffer(stub_buffer->anwb()))
+        .WillOnce(Return(mock_buffer));
+
+    external_window.driver_returns_buffer(stub_buffer->anwb(), -1);
+}
+
 TEST_F(ServerRenderWindow, returns_format)
 {
     EXPECT_EQ(HAL_PIXEL_FORMAT_RGBA_8888, render_window.driver_requests_info(NATIVE_WINDOW_FORMAT));

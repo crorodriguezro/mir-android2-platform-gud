@@ -43,11 +43,13 @@ mga::ServerRenderWindow::ServerRenderWindow(
     MirPixelFormat format,
     std::shared_ptr<InterpreterResourceCache> const& cache,
     DeviceQuirks& quirks,
+    bool synthetic_gud_external,
     DisplayName display_name)
     : fb_bundle(fb_bundle),
       resource_cache(cache),
       format(mga::to_android_format(format)),
       clear_fence(quirks.clear_fb_context_fence()),
+      synthetic_gud_external(synthetic_gud_external),
       display_name(display_name)
 {
 }
@@ -93,7 +95,7 @@ void mga::ServerRenderWindow::driver_returns_buffer(ANativeWindowBuffer* buffer,
 
     //depending on the quirk, some mali drivers won't synchronize the fb context fence before posting.
     //if this bug is present, we synchronize here to avoid tearing or other artifacts.
-    if (clear_fence)
+    if (clear_fence || (synthetic_gud_external && display_name == DisplayName::external))
         mga::SyncFence(std::make_shared<RealSyncFileOps>(), mir::Fd(fence_fd)).wait();
     else
         resource_cache->update_native_fence(buffer, fence_fd);

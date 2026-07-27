@@ -24,6 +24,7 @@
 #include "mir/graphics/egl_resources.h"
 #include "mir/graphics/transformation.h"
 #include "display.h"
+#include "gud_output.h"
 #include "virtual_output.h"
 #include "display_component_factory.h"
 #include "interpreter_cache.h"
@@ -127,7 +128,8 @@ std::unique_ptr<mga::ConfigurableDisplayBuffer> create_display_buffer(
     auto cache = std::make_shared<mga::InterpreterCache>();
     mga::DeviceQuirks quirks(mga::PropertiesOps{}, gl_context);
     auto interpreter = std::make_shared<mga::ServerRenderWindow>(
-        fbs, config.current_format, cache, quirks, name);
+        fbs, config.current_format, cache, quirks,
+        name == mga::DisplayName::external && mga::GudOutput::available(), name);
     auto native_window = std::make_shared<mga::MirNativeWindow>(interpreter, report);
     return std::unique_ptr<mga::ConfigurableDisplayBuffer>(new mga::DisplayBuffer(
         name,
