@@ -252,6 +252,27 @@ commands and state are retained at
 `../gud/backport-4.9/env/local/evidence/xdisp-p0.2-reboot-baseline-2026-07-27T1313COT/`.
 P0.2 remains **in progress**.
 
+## 2026-07-27 synthetic return-fence retry
+
+The `e9fb3a5` flow diagnostic established that the synthetic output reuses three
+Android buffers, receives one returned fence per render, and receives no fence
+on the next dequeue. Commit `9c6d772` therefore waited and cleared returned
+fences only for the synthetic GUD external window, preserving primary and real
+Android-external behavior. Its compatible artifact SHA-256 was
+`72829fb6240048bfe7e63e8d3fec65d280635abb742409a0c1c77a2aeed52e98`; all 19
+focused server-window, worker, and HWC-boundary tests passed.
+
+After explicit Pi reboot/start authorization, a fresh active/configured/Idle
+preflight, host gate, clean 15-second packaged control, and bounded 1920x1080
+GUD setup, the fixed artifact still reached 1024 FDs/925 sync files and emitted
+binder `-12` and KGSL `-24`. Counters had `copied_fences=0`, so this disproves
+the returned-fence wait as the remaining fix, but does not identify the final
+remaining handle owner. Pi payloads stayed bounded and shown receives returned
+Idle. The packaged plugin and normal GUD module were restored; LightDM needed
+only reset/start after failure. Evidence is at
+`../gud/backport-4.9/env/local/evidence/xdisp-p0.2-return-fence-fix-2026-07-27T1431COT/`.
+P0.2 remains **in progress**.
+
 ## 2026-07-27 external render-fence flow stop
 
 External-only counters at `694d591` proved that the remaining 574-sync-file
