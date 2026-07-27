@@ -125,11 +125,13 @@ std::unique_ptr<mga::ConfigurableDisplayBuffer> create_display_buffer(
     std::shared_ptr<mga::NativeWindowReport> const& report,
     mga::OverlayOptimization overlay_option)
 {
-    std::shared_ptr<mga::FramebufferBundle> fbs{display_buffer_builder.create_framebuffers(config)};
     auto cache = std::make_shared<mga::InterpreterCache>();
     mga::DeviceQuirks quirks(mga::PropertiesOps{}, gl_context);
     auto const offscreen = mga::should_use_gud_offscreen_target(
         mga::GudOutput::available(), name);
+    std::shared_ptr<mga::FramebufferBundle> fbs;
+    if (!offscreen)
+        fbs = display_buffer_builder.create_framebuffers(config);
     std::shared_ptr<mga::MirNativeWindow> native_window;
     if (!offscreen)
     {

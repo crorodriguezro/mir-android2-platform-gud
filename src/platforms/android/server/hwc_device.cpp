@@ -144,7 +144,9 @@ void mga::HwcDevice::commit(std::list<DisplayContents> const& contents)
                     [&]{ content.context.release_current(); });
                 content.compositor.render(std::move(rejected_renderables), content.list_offset, content.context);
             }
-            content.list.setup_fb(content.context.last_rendered_buffer());
+            auto const framebuffer = content.context.last_rendered_buffer();
+            if (framebuffer)
+                content.list.setup_fb(framebuffer);
             /* The synthetic sink is not submitted to Android HWC to consume this fence. */
             if (mga::should_arm_android_hwc_acquire_fence(synthetic_gud_external, content.name))
                 content.list.swap_occurred();

@@ -199,6 +199,54 @@ TEST_F(DisplayBuffer, creates_egl_context_from_shared_context)
     testing::Mock::VerifyAndClearExpectations(&mock_egl);
 }
 
+TEST_F(DisplayBuffer, synthetic_offscreen_target_uses_a_plain_texture_framebuffer)
+{
+    using namespace testing;
+    testing::Mock::VerifyAndClearExpectations(&mock_egl);
+
+    EXPECT_CALL(mock_egl, eglCreateContext(dummy_display, _, dummy_context, _))
+        .WillOnce(Return(mock_egl.fake_egl_context));
+    EXPECT_CALL(mock_egl, eglCreatePbufferSurface(dummy_display, _, _))
+        .WillOnce(Return(mock_egl.fake_egl_surface));
+    EXPECT_CALL(mock_egl, eglCreateWindowSurface(_, _, _, _)).Times(0);
+    EXPECT_CALL(mock_gl, glGenTextures(1, _))
+        .WillOnce([](GLsizei, GLuint* texture) { *texture = 7; });
+    EXPECT_CALL(mock_gl, glBindTexture(GL_TEXTURE_2D, 7));
+    EXPECT_CALL(mock_gl, glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA,
+                                      display_size.width.as_int(), display_size.height.as_int(), 0,
+                                      GL_RGBA, GL_UNSIGNED_BYTE, nullptr));
+    EXPECT_CALL(mock_gl, glGenFramebuffers(1, _))
+        .WillOnce([](GLsizei, GLuint* framebuffer) { *framebuffer = 8; });
+    EXPECT_CALL(mock_gl, glBindFramebuffer(GL_FRAMEBUFFER, 8)).Times(2);
+    EXPECT_CALL(mock_gl, glFramebufferTexture2D(
+        GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 7, 0)).Times(2);
+    EXPECT_CALL(mock_gl, glCheckFramebufferStatus(GL_FRAMEBUFFER))
+        .Times(2)
+        .WillRepeatedly(Return(GL_FRAMEBUFFER_COMPLETE));
+    EXPECT_CALL(mock_gl, glViewport(0, 0, display_size.width.as_int(), display_size.height.as_int())).Times(2);
+    EXPECT_CALL(*mock_fb_bundle, buffer_for_render()).Times(0);
+    EXPECT_CALL(*mock_fb_bundle, last_rendered_buffer()).Times(0);
+
+    mga::DisplayBuffer offscreen{
+        mga::DisplayName::external,
+        std::unique_ptr<mga::LayerList>(
+            new mga::LayerList(std::make_shared<mga::IntegerSourceCrop>(), {}, top_left)),
+        mock_fb_bundle,
+        mock_display_device,
+        nullptr,
+        *gl_context,
+        stub_program_factory,
+        transformation,
+        area,
+        mga::OverlayOptimization::enabled,
+        true};
+
+    offscreen.make_current();
+    EXPECT_EQ(nullptr, offscreen.contents().context.last_rendered_buffer());
+
+    testing::Mock::VerifyAndClearExpectations(&mock_egl);
+}
+
 TEST_F(DisplayBuffer, fails_on_egl_resource_creation)
 {
     using namespace testing;

@@ -43,6 +43,15 @@ TEST(GudOffscreenTarget, replaces_only_the_synthetic_external_window_surface)
     EXPECT_FALSE(mga::should_use_gud_offscreen_target(true, mga::DisplayName::virt));
 }
 
+TEST(GudOffscreenTarget, render_only_lifecycle_has_no_android_framebuffer)
+{
+    /* The standalone texture-FBO has no Buffer to lease or pass to Android HWC. */
+    EXPECT_TRUE(mga::should_use_gud_offscreen_target(true, mga::DisplayName::external));
+    EXPECT_FALSE(mga::should_submit_to_android_hwc(true, mga::DisplayName::external));
+    EXPECT_FALSE(mga::should_arm_android_hwc_acquire_fence(true, mga::DisplayName::external));
+    EXPECT_FALSE(mga::should_start_gud_presentation_worker());
+}
+
 TEST(GudModeSelection, prefers_the_advertised_preferred_mode)
 {
     mga::GudModeCandidate const modes[] = {
