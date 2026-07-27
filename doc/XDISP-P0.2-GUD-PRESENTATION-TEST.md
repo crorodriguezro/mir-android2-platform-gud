@@ -229,3 +229,22 @@ only. Retained commands, counts, and the next clean-baseline gate are at
 `../gud/backport-4.9/env/local/evidence/xdisp-p0.2-health-comparison-2026-07-27T1259COT/`.
 Keep P0.2 **in progress** and the packaged plugin active until a clean packaged
 baseline permits the bounded comparison.
+
+## 2026-07-27 rebooted baseline and plugin-load control
+
+After an authorized OnePlus-only reboot, the packaged hash was verified and a
+30-second control stayed at 90 compositor FDs with zero binder `-12` and KGSL
+`-24` errors. The mandatory dynamic gate found `1d50:614d` at `1-1.3`; read-only
+Pi preflight reported `active`, `configured`, and no poisoned/in-flight receive.
+The commit-qualified `20e54b0` artifact was then mounted for 20 seconds. Its
+compositor stayed bounded at 89--90 FDs and five--six sync fences with zero new
+binder/KGSL errors. The packaged plugin was restored and verified immediately.
+
+This is a clean plugin-load control only: after the OnePlus reboot, the exposed
+DRM topology had only `card0` and Mir recorded DisplayPort disconnected. No GUD
+card was available to synthesize the output, so no worker marker, KMS setup,
+Pi receive, or payload occurred. This is P0.3 reappearance/live-card discovery
+evidence, not a P0.2 worker success or a reason to use a fixed card path. Full
+commands and state are retained at
+`../gud/backport-4.9/env/local/evidence/xdisp-p0.2-reboot-baseline-2026-07-27T1313COT/`.
+P0.2 remains **in progress**.
