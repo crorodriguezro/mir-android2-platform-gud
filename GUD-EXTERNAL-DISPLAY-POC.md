@@ -51,6 +51,14 @@ diagnostic. The compatible Noble module built with those changes has SHA-256
 scoped source commit `01d1f23`; it is a staged test artifact, not a normal
 phone deployment.
 
+### 2026-07-27 guarded retries
+
+The `01d1f23` worker-boundary retry did not reproduce binder/KGSL exhaustion.
+The `0b09f77` KMS-stage retry proved that the worker consumes a frame and opens
+GUD DRM before failing during atomic KMS resource setup, prior to allocation,
+modeset, or USB. Both sessions restored the packaged plugin without changing
+the Pi service. This is containment/diagnosis progress, not P0.2 acceptance.
+
 ## What the POC proved
 
 - With a live GUD DRM node, Lomiri exposed a connected, used `DisplayPort-2`

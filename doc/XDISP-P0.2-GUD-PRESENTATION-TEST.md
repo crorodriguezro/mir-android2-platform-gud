@@ -153,3 +153,18 @@ the phone's versioned Mir 1 sonames and Boost 1.83. The direct focused filter
 ran six passing checks: the five worker lifecycle checks plus the synthetic
 HWC-boundary policy. This is retained offline evidence only; the artifact is
 commit-qualified but has not yet passed a hardware acceptance case.
+
+## 2026-07-27 guarded hardware retries
+
+Commit `01d1f23` started the worker and made the synthetic output connected
+without the earlier binder/KGSL failure, but did not reach KMS setup or Pi
+traffic. Commit `0b09f77` added KMS-stage messages; its plugin SHA-256 was
+`c7f8659faeb3646462248c0bc492328ab6fa42d4a844cdccddb56e74af1ae843` and its
+six focused tests passed. After the mandatory dynamic `1d50:614d` gate, the
+worker processed an external frame and opened GUD DRM, then repeatedly failed
+during atomic KMS resource setup before allocation, modeset, or USB traffic.
+The Pi stayed active/configured and both sessions restored the packaged plugin.
+This is contained pre-transfer evidence only; P0.2 remains in progress and
+all slow/I/O-error/reappearance/shutdown/manual-input acceptance rows remain
+unverified. Raw evidence is under
+`gud/backport-4.9/env/local/evidence/xdisp-p0.2-hardware-2026-07-27T1215COT/`.
