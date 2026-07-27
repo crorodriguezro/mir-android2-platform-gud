@@ -7,18 +7,38 @@ acceptance evidence.
 
 ## Offline gate
 
-Build a commit-qualified plugin in a supported Mir/Android2 build environment,
-then run the focused worker test:
+On this Fedora/Asahi laptop, use the tracked Ubuntu 20.04 container rather
+than trying to mix UBports' Mir 1/libhybris ABI with Fedora libraries. The
+image adds the public UBports Focal archive with its signed `keyring.gpg`; it
+installs the current package names `libmircore-dev`, `libmirplatform-dev`,
+`libmiral-dev`, and `mirtest-dev`, which satisfy CMake's `mircore`,
+`mirplatform`, and `mirtest` pkg-config probes even though `debian/control`
+still spells their historical names `libmir1*-dev`.
+
+Prerequisite: a working Docker daemon. Build and test with:
 
 ```bash
-cmake -S . -B build-p0.2 -DMIR_ENABLE_TESTS=ON -DMIR_BUILD_UNIT_TESTS=ON
-cmake --build build-p0.2 --target mir_unit_tests_android2
-ctest --test-dir build-p0.2 --output-on-failure -R GudPresentationWorker
+./tools/xdisp-p0.2-build.sh
 ```
 
-Record the exact commit, build command, compiler, test output, and deployed
-plugin hash. Do not deploy an uncommitted build. A source-level worker check is
-not a substitute for this gate.
+The source is mounted read-only and the build tree defaults to
+`/tmp/mir-android2-platform-gud-p02-build`; override it with
+`XDISP_P02_BUILD_DIR=/absolute/path` if artifacts must be retained elsewhere.
+The default is one build job for the memory-constrained laptop; set
+`XDISP_P02_BUILD_JOBS=<n>` only after confirming the available RAM.
+The script builds `wrapper`, the `mirplatformgraphicsandroid` shared module,
+and `mir_unit_tests_android2`, then runs the focused
+`GudPresentationWorker.*` GTest suite directly. For a full suite, run the
+same image/mount setup with `cd "$XDISP_P02_BUILD_DIR" && ctest
+--output-on-failure`.
+On Fedora with SELinux enforcing, the run containers use
+`--security-opt label=disable` rather than relabeling the checkout; they run
+as the invoking user with no network or Linux capabilities, keep `/src`
+read-only, and write only the selected build directory.
+
+Record the exact commit, image tag, build command, compiler, test output, and
+deployed plugin hash. Do not deploy an uncommitted build. A source-level worker
+check is not a substitute for this gate.
 
 ## Hardware session gate
 
