@@ -252,6 +252,21 @@ commands and state are retained at
 `../gud/backport-4.9/env/local/evidence/xdisp-p0.2-reboot-baseline-2026-07-27T1313COT/`.
 P0.2 remains **in progress**.
 
+## 2026-07-27 synthetic offscreen target gate
+
+Commit `eae00c7` introduced the first synthetic-only pbuffer/FBO render target
+to remove `eglCreateWindowSurface`/`MirNativeWindow` from the external producer.
+Its compatible artifact SHA-256 was
+`0525a1d2d0d77d50d61970154e212963d52a6ef444db648592bb2c7a8abc1487`; 21
+focused checks passed. The render-only phone gate failed at startup with
+`cannot bind synthetic GUD offscreen framebuffer`, before any worker, KMS, USB,
+or Pi receive. It was immediately rolled back to the packaged plugin and normal
+GUD module. A plain GLES texture-FBO refinement compiled but exhausted local
+disk while linking the unit-test binary; it was not committed or deployed.
+This is contained startup evidence only. See
+`../gud/backport-4.9/env/local/evidence/xdisp-p0.2-offscreen-gate-2026-07-27T1659COT/`.
+P0.2 remains **in progress**.
+
 ## 2026-07-27 synthetic render-only control
 
 Commit `a0fb290` is a render-only control: it retains the synthetic Android EGL
