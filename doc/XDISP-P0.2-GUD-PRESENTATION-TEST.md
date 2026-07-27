@@ -168,3 +168,10 @@ This is contained pre-transfer evidence only; P0.2 remains in progress and
 all slow/I/O-error/reappearance/shutdown/manual-input acceptance rows remain
 unverified. Raw evidence is under
 `gud/backport-4.9/env/local/evidence/xdisp-p0.2-hardware-2026-07-27T1215COT/`.
+
+The final `7185800` exception-logging retry identified the exact pre-transfer
+boundary: GUD was connected but advertised only `1920x1080`, while this P0.2
+POC intentionally requires `1280x720`. The module hash was
+`2065484f746e766b245d828a0f40465996d4fcaeb6099a7162a9b355d00ccb39`, and the
+same six focused tests passed. Mode/geometry alignment is P1/P2 work, so this
+procedure does not change the Mir or Pi mode merely to force P0.2 acceptance.
