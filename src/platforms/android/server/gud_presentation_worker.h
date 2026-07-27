@@ -9,6 +9,7 @@
 #define MIR_GRAPHICS_ANDROID_GUD_PRESENTATION_WORKER_H_
 
 #include <condition_variable>
+#include <cstdint>
 #include <exception>
 #include <functional>
 #include <memory>
@@ -28,6 +29,17 @@ class LatestPresentationWorker
 public:
     using Present = std::function<void(Frame const&)>;
     using Failure = std::function<void(std::exception_ptr)>;
+
+    struct Statistics
+    {
+        uint64_t submitted;
+        uint64_t coalesced;
+        uint64_t started;
+        uint64_t completed;
+        uint64_t failed;
+        bool active;
+        bool pending;
+    };
 
     LatestPresentationWorker(Present present, Failure failure) :
         present{std::move(present)},
@@ -52,9 +64,18 @@ public:
             std::lock_guard<std::mutex> lock{state_mutex};
             if (stopping)
                 return;
+            ++submitted;
+            if (pending)
+                ++coalesced;
             pending = std::move(replacement);
         }
         wakeup.notify_one();
+    }
+
+    Statistics statistics() const
+    {
+        std::lock_guard<std::mutex> lock{state_mutex};
+        return {submitted, coalesced, started, completed, failed, active, static_cast<bool>(pending)};
     }
 
     /*
@@ -87,14 +108,18 @@ private:
                 if (stopping)
                     return;
                 frame = std::move(pending);
+                ++started;
+                active = true;
             }
 
             try
             {
                 present(*frame);
+                mark_completed();
             }
             catch (...)
             {
+                mark_failed();
                 report_failure(std::current_exception());
             }
         }
@@ -112,13 +137,33 @@ private:
         }
     }
 
+    void mark_completed()
+    {
+        std::lock_guard<std::mutex> lock{state_mutex};
+        ++completed;
+        active = false;
+    }
+
+    void mark_failed()
+    {
+        std::lock_guard<std::mutex> lock{state_mutex};
+        ++failed;
+        active = false;
+    }
+
     Present present;
     Failure failure;
-    std::mutex state_mutex;
+    mutable std::mutex state_mutex;
     std::mutex stop_mutex;
     std::condition_variable wakeup;
     std::unique_ptr<Frame> pending;
     bool stopping{false};
+    uint64_t submitted{0};
+    uint64_t coalesced{0};
+    uint64_t started{0};
+    uint64_t completed{0};
+    uint64_t failed{0};
+    bool active{false};
     std::thread worker;
 };
 }

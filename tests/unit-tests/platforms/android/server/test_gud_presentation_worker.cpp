@@ -98,9 +98,20 @@ TEST(GudPresentationWorker, coalesces_pending_frames_to_the_newest)
     changed.notify_all();
     {
         std::unique_lock<std::mutex> lock{mutex};
-        ASSERT_TRUE(changed.wait_for(lock, seconds{1}, [&] { return presented.size() == 2; }));
+        ASSERT_TRUE(changed.wait_for(lock, seconds{1}, [&]
+        {
+            return presented.size() == 2 && worker.statistics().completed == 2;
+        }));
         EXPECT_EQ((std::vector<int>{1, 3}), presented);
     }
+    auto const stats = worker.statistics();
+    EXPECT_EQ(3u, stats.submitted);
+    EXPECT_EQ(1u, stats.coalesced);
+    EXPECT_EQ(2u, stats.started);
+    EXPECT_EQ(2u, stats.completed);
+    EXPECT_EQ(0u, stats.failed);
+    EXPECT_FALSE(stats.active);
+    EXPECT_FALSE(stats.pending);
     worker.stop();
 }
 
@@ -231,6 +242,12 @@ TEST(GudPresentationWorker, contains_presentation_errors_and_continues)
     worker.submit(2);
     EXPECT_EQ(std::future_status::ready,
               second_frame_presented.get_future().wait_for(seconds{1}));
+    auto const stats = worker.statistics();
+    EXPECT_EQ(2u, stats.submitted);
+    EXPECT_EQ(2u, stats.started);
+    EXPECT_EQ(1u, stats.completed);
+    EXPECT_EQ(1u, stats.failed);
+    EXPECT_FALSE(stats.active);
     worker.stop();
 }
 

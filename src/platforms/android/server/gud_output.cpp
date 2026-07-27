@@ -15,6 +15,7 @@
 #include <xf86drmMode.h>
 
 #include <fcntl.h>
+#include <dirent.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <unistd.h>
@@ -459,6 +460,20 @@ void report_gud_failure(std::exception_ptr error)
     }
 }
 
+unsigned open_fd_count()
+{
+    auto* const directory = opendir("/proc/self/fd");
+    if (!directory)
+        return 0;
+
+    unsigned count = 0;
+    while (auto const* entry = readdir(directory))
+        if (std::strcmp(entry->d_name, ".") && std::strcmp(entry->d_name, ".."))
+            ++count;
+    closedir(directory);
+    return count;
+}
+
 std::once_flag worker_present_notice;
 
 class GudPresentation
@@ -477,6 +492,22 @@ public:
             },
             report_gud_failure}
     {
+    }
+
+    void submit(std::shared_ptr<mga::Buffer> frame)
+    {
+        worker.submit(std::move(frame));
+        auto const stats = worker.statistics();
+        if (stats.submitted <= 10 || stats.submitted % 120 == 0)
+            mir::log_info(
+                "GUD POC worker stats submitted=%llu coalesced=%llu started=%llu completed=%llu "
+                "failed=%llu active=%d pending=%d compositor_fds=%u",
+                static_cast<unsigned long long>(stats.submitted),
+                static_cast<unsigned long long>(stats.coalesced),
+                static_cast<unsigned long long>(stats.started),
+                static_cast<unsigned long long>(stats.completed),
+                static_cast<unsigned long long>(stats.failed), stats.active, stats.pending,
+                open_fd_count());
     }
 
     std::shared_ptr<GudPresenter> const presenter;
@@ -536,7 +567,7 @@ void mga::GudOutput::present_external(std::list<DisplayContents> const& contents
             output = std::make_unique<GudPresentation>();
             mir::log_info("GUD POC presentation worker started");
         }
-        output->worker.submit(std::move(buffer));
+        output->submit(std::move(buffer));
         return;
     }
 
