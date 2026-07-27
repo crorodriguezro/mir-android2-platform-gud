@@ -64,6 +64,8 @@ private:
     int format;
     bool const clear_fence;
     DisplayName const display_name;
+    unsigned dequeued_fences{0};
+    unsigned copied_fences{0};
     unsigned returned_fences{0};
     unsigned requests{0};
     std::unordered_set<ANativeWindowBuffer*> returned_buffers;

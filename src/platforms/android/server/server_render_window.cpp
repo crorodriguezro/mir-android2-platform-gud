@@ -32,6 +32,7 @@
 #include <boost/throw_exception.hpp>
 #include <stdexcept>
 #include <sstream>
+#include <unistd.h>
 
 namespace mg=mir::graphics;
 namespace mga=mir::graphics::android;
@@ -62,6 +63,17 @@ std::shared_ptr<mga::NativeBuffer> mga::ServerRenderWindow::driver_requests_buff
     }
     resource_cache->store_buffer(buffer, handle);
     ++requests;
+    if (display_name == DisplayName::external)
+    {
+        if (fence >= 0)
+            ++dequeued_fences;
+        auto const copied_fence = handle->copy_fence();
+        if (copied_fence >= 0)
+        {
+            ++copied_fences;
+            close(copied_fence);
+        }
+    }
     return handle;
 }
 
@@ -75,8 +87,8 @@ void mga::ServerRenderWindow::driver_returns_buffer(ANativeWindowBuffer* buffer,
         if (requests <= 10 || requests % 120 == 0)
             mir::log_info(
                 "GUD POC external render window requests=%u returned_fences=%u unique_buffers=%zu "
-                "returned_fence=%d",
-                requests, returned_fences, returned_buffers.size(), fence_fd);
+                "dequeued_fences=%u copied_fences=%u returned_fence=%d",
+                requests, returned_fences, returned_buffers.size(), dequeued_fences, copied_fences, fence_fd);
     }
 
     //depending on the quirk, some mali drivers won't synchronize the fb context fence before posting.
