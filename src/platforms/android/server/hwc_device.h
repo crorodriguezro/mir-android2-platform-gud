@@ -42,6 +42,7 @@ class HwcDevice : public DisplayDevice
 {
 public:
     HwcDevice(std::shared_ptr<HwcWrapper> const& hwc_wrapper);
+    ~HwcDevice() override;
 
     bool compatible_renderlist(RenderableList const& renderlist) override;
     void commit(std::list<DisplayContents> const& contents) override;

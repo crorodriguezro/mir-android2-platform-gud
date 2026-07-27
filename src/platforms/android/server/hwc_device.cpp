@@ -169,6 +169,11 @@ void mga::HwcDevice::commit(std::list<DisplayContents> const& contents)
     recommend_sleep = purely_overlays ? 10ms : 0ms;
 }
 
+mga::HwcDevice::~HwcDevice()
+{
+    GudOutput::shutdown();
+}
+
 std::chrono::milliseconds mga::HwcDevice::recommended_sleep() const
 {
     return recommend_sleep;

@@ -15,7 +15,10 @@ struct DisplayContents;
 class GudOutput
 {
 public:
+    /* True only when a currently accessible DRM card identifies as GUD. */
+    static bool available();
     static void present_external(std::list<DisplayContents> const& contents);
+    static void shutdown();
 };
 }
 }

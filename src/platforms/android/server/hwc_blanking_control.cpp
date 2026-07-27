@@ -18,6 +18,7 @@
 
 #include "hwc_configuration.h"
 #include "hwc_wrapper.h"
+#include "gud_output.h"
 #include "mir/raii.h"
 #include "android_format_conversion-inl.h"
 #include "mir/geometry/length.h"
@@ -27,7 +28,6 @@
 #include <stdexcept>
 #include <system_error>
 #include <chrono>
-#include <unistd.h>
 #include <deviceinfo/deviceinfo.h>
 
 #define MIR_LOG_COMPONENT "android/server"
@@ -99,7 +99,7 @@ mga::HwcBlankingControl::HwcBlankingControl(
     off{false},
     format(determine_hwc_fb_format())
 {
-    gud_external = ::access("/dev/dri/card1", R_OK | W_OK) == 0;
+    gud_external = GudOutput::available();
 }
 
 mga::HwcBlankingControl::HwcBlankingControl(
@@ -109,7 +109,7 @@ mga::HwcBlankingControl::HwcBlankingControl(
     off{false},
     format{format}
 {
-    gud_external = ::access("/dev/dri/card1", R_OK | W_OK) == 0;
+    gud_external = GudOutput::available();
 }
 
 void mga::HwcBlankingControl::power_mode(DisplayName display_name, MirPowerMode mode_request)
@@ -292,7 +292,7 @@ mga::HwcPowerModeControl::HwcPowerModeControl(
     hwc_device{hwc_device},
     format(determine_hwc_fb_format())
 {
-    gud_external = ::access("/dev/dri/card1", R_OK | W_OK) == 0;
+    gud_external = GudOutput::available();
 }
 
 void mga::HwcPowerModeControl::power_mode(DisplayName display_name, MirPowerMode mode_request)

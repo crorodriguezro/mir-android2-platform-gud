@@ -32,18 +32,22 @@ layout for every client, acceptable performance, or reconnect support.
 
 ## Observed failures and likely boundaries
 
-1. **Compositor stalls.** `GudOutput::present_external()` runs during
-   `HwcDevice::commit()`. It performs synchronous GUD/KMS work, so a full
-   frame transfer, slow Pi, or failed transfer blocks the same path that
-   services the phone's UI. This explains the frozen display and very slow
-   refresh observed during testing.
+1. **Compositor stalls (source repair in progress).** The original
+   `HwcDevice::commit()` -> `GudOutput::present_external()` path synchronously
+   copied the gralloc buffer and called `drmModeAtomicCommit()`. P0.2 now
+   retains only the latest buffer for a worker-owned KMS session, so no GUD
+   copy or USB/KMS wait occurs in `commit()`. Component tests cover the queue,
+   error, and shutdown behavior; a supported-project build plus retained phone
+   evidence are still required before this is treated as verified.
 2. **Unreliable first transfer after rebind.** After a Pi rebind/reconnect,
    FunctionFS can accept enumeration but stall on its first bulk payload. The
    OnePlus reports a GUD bulk/atomic timeout (`-110`). This is owned by
    `gud-gadget` and must be gated independently of this plugin.
-3. **Unstable DRM node.** The POC hard-codes `/dev/dri/card1`; GUD may become
-   another card number after reconnect. A symlink is not a durable fix because
-   an already-open old device file remains stale.
+3. **Unstable DRM node.** P0.2 replaces the POC's fixed node with a bounded
+   scan for an accessible DRM driver named `gud`. It deliberately does not
+   subscribe to DRM remove/add or reconfigure the Mir output; that complete
+   reconnect lifecycle remains P0.3. A symlink is not a durable fix because an
+   already-open old device file remains stale.
 4. **Geometry/content mismatch.** The external monitor sometimes showed the
    orange phone background at full size and sometimes a tree background using
    full height but roughly one sixth of the width. The source copy uses buffer
@@ -64,8 +68,8 @@ the POC-specific record rather than a duplicate project plan.
 
 | ID | State | Owner | Next result required |
 | --- | --- | --- | --- |
-| `XDISP-P0.1` | blocked | `gud-gadget` | Ten post-rebind/reconnect cycles complete their first 64 KiB payload, without `-110`. |
-| `XDISP-P0.2` | planned | this repository | Decouple submit/copy from `HwcDevice::commit()` using a bounded worker queue that keeps the newest frame and reports failures without blocking the UI. |
+| `XDISP-P0.1` | verified | `gud-gadget` | Verified operating constraint: every actual OnePlus-to-Pi payload is at or below 12,800 bytes. |
+| `XDISP-P0.2` | in progress | this repository | Decouple submit/copy from `HwcDevice::commit()` using a bounded worker queue that keeps the newest frame and reports failures without blocking the UI. |
 | `XDISP-P0.3` | planned | this repository + `gud` | Discover the active GUD DRM card and process removal/re-add instead of opening `card1` once. |
 | `XDISP-P1.1` | planned | this repository + `gud-gadget` | Verify full-width, correctly placed external content through repeated enable/disable and reconnect cycles. |
 | `XDISP-P2.1` | planned | all repositories | Measure end-to-end FPS, latency, CPU use, and dropped frames; then add damage-aware updates, matched mode selection, and only then compression if justified. |
@@ -77,12 +81,14 @@ frame is a diagnostic observation, not completion.
 
 ## Implementation direction
 
-After `XDISP-P0.1` gives a reliable transport gate, implement `XDISP-P0.2`
-before further visual work. The worker should own its GUD file descriptor,
-bound memory and queue depth, drop superseded frames, and make device errors
-visible to output/hotplug logic. Then implement dynamic discovery and proper
-hotplug (`XDISP-P0.3`). Only with those protections should geometry and
-throughput experiments continue.
+P0.2 is implemented at the source/component-test boundary. Its worker owns
+the GUD fd and KMS buffers, keeps one newest pending `shared_ptr` frame, drops
+superseded work, logs contained I/O errors, and joins before shutdown releases
+KMS state. The absence/startup and retry boundaries are documented in
+`doc/XDISP-P0.2-GUD-PRESENTATION-TEST.md`; the formal design and plan are in
+the coordination repository. Full dynamic remove/add and output hotplug remain
+P0.3. Do not infer hardware verification from source tests or deployment of
+this experimental plugin.
 
 The desired product remains an independent Lomiri external display. A separate
 screen-capture bridge can still be useful as a mirror-only diagnostics and
