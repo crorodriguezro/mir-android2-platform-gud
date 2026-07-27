@@ -139,21 +139,27 @@ private:
 
 Kms::Kms()
 {
+    mir::log_info("GUD POC worker scanning accessible GUD DRM cards");
     fd = open_gud_card();
     if (fd < 0)
         throw std::runtime_error{"no accessible GUD DRM card"};
 
     try
     {
+        mir::log_info("GUD POC worker opened a GUD DRM card");
         if (drmSetClientCap(fd, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1) ||
             drmSetClientCap(fd, DRM_CLIENT_CAP_ATOMIC, 1))
             throw drm_error("cannot enable GUD atomic KMS client capabilities");
 
+        mir::log_info("GUD POC worker querying GUD atomic KMS resources");
         setup();
+        mir::log_info("GUD POC worker allocating GUD KMS buffers");
         allocate(frames[0]);
         allocate(frames[1]);
         std::memset(frames[0].map, 0, frames[0].dumb.size);
+        mir::log_info("GUD POC worker submitting initial GUD modeset");
         commit(frames[0], true);
+        mir::log_info("GUD POC worker completed initial GUD modeset");
     }
     catch (...)
     {
@@ -396,6 +402,8 @@ void report_gud_failure(std::exception_ptr error)
     }
 }
 
+std::once_flag worker_present_notice;
+
 class GudPresentation
 {
 public:
@@ -404,6 +412,10 @@ public:
         worker{
             [presenter = presenter](std::shared_ptr<mga::Buffer> const& frame)
             {
+                std::call_once(worker_present_notice, []
+                {
+                    mir::log_info("GUD POC worker processing an external frame");
+                });
                 presenter->present(frame);
             },
             report_gud_failure}
