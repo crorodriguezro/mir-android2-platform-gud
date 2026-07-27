@@ -25,6 +25,7 @@
 #include "buffer.h"
 #include "hwc_fallback_gl_renderer.h"
 #include "gud_output.h"
+#include "gud_hwc_boundary.h"
 #include "mir/raii.h"
 #include <limits>
 #include <algorithm>
@@ -89,8 +90,11 @@ bool mga::HwcDevice::compatible_renderlist(RenderableList const& list)
     return true;
 }
 
-mga::HwcDevice::HwcDevice(std::shared_ptr<HwcWrapper> const& hwc_wrapper) :
-    hwc_wrapper(hwc_wrapper)
+mga::HwcDevice::HwcDevice(
+    std::shared_ptr<HwcWrapper> const& hwc_wrapper,
+    bool synthetic_gud_external) :
+    hwc_wrapper(hwc_wrapper),
+    synthetic_gud_external(synthetic_gud_external)
 {
 }
 
@@ -110,8 +114,21 @@ bool mga::HwcDevice::buffer_is_onscreen(mg::Buffer const& buffer) const
 void mga::HwcDevice::commit(std::list<DisplayContents> const& contents)
 {
     std::vector<std::shared_ptr<mg::Buffer>> next_onscreen_overlay_buffers;
+    std::list<DisplayContents> hwc_contents;
 
-    hwc_wrapper->prepare(contents);
+    for (auto const& content : contents)
+    {
+        /*
+         * A GUD output is a Mir-rendered sink, not an Android-HWC display.
+         * Passing it to Android HWC can make a device try to present a
+         * nonexistent physical external display. Keep that path out of both
+         * prepare() and set(); its framebuffer is submitted below instead.
+         */
+        if (mga::should_submit_to_android_hwc(synthetic_gud_external, content.name))
+            hwc_contents.push_back(content);
+    }
+
+    hwc_wrapper->prepare(hwc_contents);
 
     bool purely_overlays = true;
 
@@ -145,10 +162,10 @@ void mga::HwcDevice::commit(std::list<DisplayContents> const& contents)
         }
     }
 
-    /* HWC ignores the synthetic external slot; submit it to GUD instead. */
-    mga::GudOutput::present_external(contents);
+    if (synthetic_gud_external)
+        mga::GudOutput::present_external(contents);
 
-    hwc_wrapper->set(contents);
+    hwc_wrapper->set(hwc_contents);
     onscreen_overlay_buffers = std::move(next_onscreen_overlay_buffers);
 
     for (auto& content : contents)

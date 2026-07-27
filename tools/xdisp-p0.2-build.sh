@@ -52,4 +52,4 @@ docker run --rm \
     --volume "$build_dir:/build" \
     --workdir /build \
     "$image_tag" \
-    /build/bin/mir_unit_tests_android2.bin --gtest_filter=GudPresentationWorker.*
+    /build/bin/mir_unit_tests_android2.bin --gtest_filter='GudPresentationWorker.*:GudHwcBoundary.*'

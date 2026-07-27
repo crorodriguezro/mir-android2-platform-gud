@@ -29,6 +29,7 @@
 #include "hwc_configuration.h"
 #include "hwc_layers.h"
 #include "hwc_device.h"
+#include "gud_output.h"
 #include "hwc_fb_device.h"
 #include "graphic_buffer_allocator.h"
 #include "cmdstream_sync_factory.h"
@@ -159,11 +160,11 @@ std::unique_ptr<mga::DisplayDevice> mga::HalComponentFactory::create_display_dev
             case mga::HwcVersion::hwc14:
             case mga::HwcVersion::hwc15:
                 return std::unique_ptr<mga::DisplayDevice>(
-                    new mga::HwcDevice(hwc_wrapper));
+                    new mga::HwcDevice(hwc_wrapper, mga::GudOutput::available()));
 
             case mga::HwcVersion::hwc20:
                 return std::unique_ptr<mga::DisplayDevice>(
-                    new mga::HwcDevice20(hwc_wrapper));
+                    new mga::HwcDevice20(hwc_wrapper, mga::GudOutput::available()));
 
             case mga::HwcVersion::unknown:
             default:

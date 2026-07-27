@@ -29,6 +29,27 @@ the Pi service was neither stopped nor restarted. This is a failed compositor
 health gate, not a GUD worker, transport, or responsiveness success. P0.2
 remains in progress pending root-cause work and a clean hardware retry.
 
+### 2026-07-27 P0.2 boundary follow-up
+
+Source review after rollback showed that P0.2 never constructed its worker
+without an external Android `mga::Buffer`; the old POC's `GUD POC output
+enabled` message had been emitted at a different, eager presenter-construction
+point. The failed session therefore shows no worker/KMS transfer, but does not
+identify why the synthetic output lacked a submitted framebuffer. Its binder
+and KGSL errors remain a phone-health stop condition, not proof of a GUD worker
+failure.
+
+P0.2 now keeps a synthetic GUD external `DisplayContents` entry out of Android
+HWC `prepare()` and `set()` calls. The entry is instead rendered by Mir and
+submitted only to the worker when it has an Android buffer. This removes an
+unsupported synthetic display from HWC1 and is also a defensive boundary for
+HWC2; retained HWC2 logs already showed no active physical external display,
+so the change is not presented as a conclusive cause of the previous resource
+exhaustion. One-time worker-idle/start messages make the next clean test
+diagnostic. The compatible Noble module built with those changes has SHA-256
+`2ce05a584bcea36b5138e2b53e4849e511671a79a91f03a212881bba3fba2d40` before
+the scoped source commit; it is not a deployment artifact.
+
 ## What the POC proved
 
 - With a live GUD DRM node, Lomiri exposed a connected, used `DisplayPort-2`

@@ -1,4 +1,5 @@
 #include "src/platforms/android/server/gud_presentation_worker.h"
+#include "src/platforms/android/server/gud_hwc_boundary.h"
 
 #include <gtest/gtest.h>
 
@@ -12,6 +13,15 @@
 
 namespace mga = mir::graphics::android;
 using namespace std::chrono;
+
+TEST(GudHwcBoundary, excludes_only_synthetic_external_from_android_hwc)
+{
+    EXPECT_TRUE(mga::should_submit_to_android_hwc(false, mga::DisplayName::primary));
+    EXPECT_TRUE(mga::should_submit_to_android_hwc(false, mga::DisplayName::external));
+    EXPECT_TRUE(mga::should_submit_to_android_hwc(true, mga::DisplayName::primary));
+    EXPECT_FALSE(mga::should_submit_to_android_hwc(true, mga::DisplayName::external));
+    EXPECT_TRUE(mga::should_submit_to_android_hwc(true, mga::DisplayName::virt));
+}
 
 TEST(GudPresentationWorker, coalesces_pending_frames_to_the_newest)
 {

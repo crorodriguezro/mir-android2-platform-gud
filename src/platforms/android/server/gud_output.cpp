@@ -416,6 +416,8 @@ public:
 
 std::mutex output_mutex;
 std::unique_ptr<GudPresentation> output;
+std::once_flag no_external_frame_notice;
+std::once_flag non_android_frame_notice;
 }
 
 bool mga::GudOutput::available()
@@ -435,15 +437,29 @@ void mga::GudOutput::present_external(std::list<DisplayContents> const& contents
             continue;
         auto buffer = std::dynamic_pointer_cast<mga::Buffer>(content.context.last_rendered_buffer());
         if (!buffer)
+        {
+            std::call_once(non_android_frame_notice, []
+            {
+                mir::log_info("GUD POC external output has no Android frame; worker remains idle");
+            });
             return;
+        }
 
         /* This lock only protects worker lifetime; it is never held by KMS I/O. */
         std::lock_guard<std::mutex> lock{output_mutex};
         if (!output)
+        {
             output = std::make_unique<GudPresentation>();
+            mir::log_info("GUD POC presentation worker started");
+        }
         output->worker.submit(std::move(buffer));
         return;
     }
+
+    std::call_once(no_external_frame_notice, []
+    {
+        mir::log_info("GUD POC external output is configured but has no DisplayContents frame");
+    });
 }
 
 void mga::GudOutput::shutdown()

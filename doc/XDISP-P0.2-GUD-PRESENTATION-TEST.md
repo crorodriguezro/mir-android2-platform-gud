@@ -32,11 +32,14 @@ Prerequisite: a working Docker daemon. Build and test with:
 The source is mounted read-only and the build tree defaults to
 `/tmp/mir-android2-platform-gud-p02-build`; override it with
 `XDISP_P02_BUILD_DIR=/absolute/path` if artifacts must be retained elsewhere.
+Use a fresh explicit build directory if an earlier container cache refers to a
+different source mount; do not delete an evidence-bearing build tree just to
+reuse its cache.
 The default is one build job for the memory-constrained laptop; set
 `XDISP_P02_BUILD_JOBS=<n>` only after confirming the available RAM.
 The script builds `wrapper`, the `mirplatformgraphicsandroid` shared module,
 and `mir_unit_tests_android2`, then runs the focused
-`GudPresentationWorker.*` GTest suite directly. For a full suite, run the
+`GudPresentationWorker.*:GudHwcBoundary.*` GTest suite directly. For a full suite, run the
 same image/mount setup with `cd "$XDISP_P02_BUILD_DIR" && ctest
 --output-on-failure`.
 On Fedora with SELinux enforcing, the run containers use
@@ -121,3 +124,32 @@ and `configured` and was not restarted. Retained commands and raw logs are in
 `gud/backport-4.9/env/local/evidence/xdisp-p0.2-hardware-2026-07-27T1125COT/`.
 This is failure/rollback evidence only: slow output, absent startup, I/O
 error, reappearance, and shutdown acceptance remain unverified.
+
+## 2026-07-27 follow-up source diagnosis
+
+The deployment log's missing `GUD POC output enabled` line is not evidence
+that the P0.2 worker or KMS path failed. The older synchronous POC wrote that
+line while lazily constructing its presenter, before it required an external
+Android framebuffer. P0.2 constructs its worker only after it obtains an
+external `mga::Buffer`; the earlier session therefore established only that no
+worker/KMS transfer occurred. It did not establish why the synthetic output
+had no frame, and the binder/KGSL failures remain a temporal correlation, not
+a worker-cause finding.
+
+The current source makes the boundary explicit: a synthetic GUD external
+output is a Mir-rendered sink and is omitted from Android HWC `prepare()` and
+`set()` lists. This corrects the former unverified assumption that Android HWC
+would ignore that slot, while retaining the normal primary and virtual HWC
+paths. It is a defensive P0.2 correctness repair, not a claim that it alone
+explains the prior HWC2 phone health failure (that wrapper had no active
+physical external display in the retained log). New one-time Mir messages
+distinguish an absent external `DisplayContents` frame, a non-Android frame,
+and a started presentation worker on the next hardware attempt.
+
+At `mir-android2-platform-gud` working state after `b885369`, the Noble build
+produced `graphics-android2.so.16` SHA-256
+`2ce05a584bcea36b5138e2b53e4849e511671a79a91f03a212881bba3fba2d40` with
+the phone's versioned Mir 1 sonames and Boost 1.83. The direct focused filter
+ran six passing checks: the five worker lifecycle checks plus the synthetic
+HWC-boundary policy. This is retained offline evidence only; do not deploy
+until the scoped source commit and a commit-qualified artifact exist.
