@@ -25,6 +25,9 @@
 #include "buffer.h"
 #include "interpreter_resource_cache.h"
 
+#define MIR_LOG_COMPONENT "android-server-render-window"
+#include <mir/log.h>
+
 #include <system/window.h>
 #include <boost/throw_exception.hpp>
 #include <stdexcept>
@@ -38,11 +41,13 @@ mga::ServerRenderWindow::ServerRenderWindow(
     std::shared_ptr<mga::FramebufferBundle> const& fb_bundle,
     MirPixelFormat format,
     std::shared_ptr<InterpreterResourceCache> const& cache,
-    DeviceQuirks& quirks)
+    DeviceQuirks& quirks,
+    DisplayName display_name)
     : fb_bundle(fb_bundle),
       resource_cache(cache),
       format(mga::to_android_format(format)),
-      clear_fence(quirks.clear_fb_context_fence())
+      clear_fence(quirks.clear_fb_context_fence()),
+      display_name(display_name)
 {
 }
 
@@ -56,11 +61,24 @@ std::shared_ptr<mga::NativeBuffer> mga::ServerRenderWindow::driver_requests_buff
         handle->update_usage(fence, mga::BufferAccess::write);
     }
     resource_cache->store_buffer(buffer, handle);
+    ++requests;
     return handle;
 }
 
 void mga::ServerRenderWindow::driver_returns_buffer(ANativeWindowBuffer* buffer, int fence_fd)
 {
+    if (display_name == DisplayName::external)
+    {
+        returned_buffers.insert(buffer);
+        if (fence_fd >= 0)
+            ++returned_fences;
+        if (requests <= 10 || requests % 120 == 0)
+            mir::log_info(
+                "GUD POC external render window requests=%u returned_fences=%u unique_buffers=%zu "
+                "returned_fence=%d",
+                requests, returned_fences, returned_buffers.size(), fence_fd);
+    }
+
     //depending on the quirk, some mali drivers won't synchronize the fb context fence before posting.
     //if this bug is present, we synchronize here to avoid tearing or other artifacts.
     if (clear_fence)

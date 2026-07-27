@@ -22,9 +22,11 @@
 
 #include "android_driver_interpreter.h"
 #include "device_quirks.h"
+#include "display_name.h"
 #include "mir_toolkit/common.h"
 
 #include <memory>
+#include <unordered_set>
 
 namespace mir
 {
@@ -41,7 +43,8 @@ public:
     ServerRenderWindow(std::shared_ptr<FramebufferBundle> const& fb_bundle,
                        MirPixelFormat format,
                        std::shared_ptr<InterpreterResourceCache> const&,
-                       DeviceQuirks& quirks);
+                       DeviceQuirks& quirks,
+                       DisplayName display_name = DisplayName::primary);
 
     std::shared_ptr<graphics::android::NativeBuffer> driver_requests_buffer(int fence_fd) override;
     void driver_returns_buffer(ANativeWindowBuffer*, int fence_fd) override;
@@ -60,6 +63,10 @@ private:
     std::shared_ptr<InterpreterResourceCache> const resource_cache;
     int format;
     bool const clear_fence;
+    DisplayName const display_name;
+    unsigned returned_fences{0};
+    unsigned requests{0};
+    std::unordered_set<ANativeWindowBuffer*> returned_buffers;
 };
 
 }
