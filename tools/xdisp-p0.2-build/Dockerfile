@@ -4,8 +4,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl gnupg \
- && curl -fsSL http://repo.ubports.com/keyring.gpg | gpg --dearmor -o /usr/share/keyrings/ubports.gpg \
- && echo "deb [signed-by=/usr/share/keyrings/ubports.gpg] http://repo.ubports.com/ focal main" > /etc/apt/sources.list.d/ubports.list \
+ && curl -fsSL https://repo.ubports.com/keyring.gpg | gpg --dearmor -o /usr/share/keyrings/ubports.gpg \
+ && echo "deb [signed-by=/usr/share/keyrings/ubports.gpg] https://repo.ubports.com/ focal main" > /etc/apt/sources.list.d/ubports.list \
  && apt-get update \
  && apt-get install -y --no-install-recommends \
       abi-compliance-checker \
