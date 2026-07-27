@@ -175,3 +175,33 @@ POC intentionally requires `1280x720`. The module hash was
 `2065484f746e766b245d828a0f40465996d4fcaeb6099a7162a9b355d00ccb39`, and the
 same six focused tests passed. Mode/geometry alignment is P1/P2 work, so this
 procedure does not change the Mir or Pi mode merely to force P0.2 acceptance.
+
+## 2026-07-27 advertised-startup-mode retry
+
+Commit `406b464` removes the POC's fixed 1280x720 assumption without changing
+the Pi's advertised modes or physical configuration. At server startup it
+scans the accessible GUD DRM card, chooses its preferred advertised connected
+mode (or the first usable one), and uses that same cached geometry for the
+synthetic Mir output. The worker makes the corresponding selection when it
+opens KMS; a later card/mode change remains a contained present failure and
+P0.3 hotplug work, not an implicit mode-management feature. The compatible
+module SHA-256 was
+`c3c80df697180a513c3943999b2e6fa88b568efd479fca01360b5c8eaa1461d2`; all
+eight focused tests, including two mode-selection tests, passed.
+
+After the mandatory gate found `1d50:614d` at `1-1.3`, the qualified module
+made Mir expose a `1920x1080` DisplayPort output, and the Pi recorded fresh
+1920x1080 direct-exact FunctionFS frames. The largest retained actual payload
+was 12,157 bytes and every shown receive returned to Idle. This proves the
+former fixed-mode KMS boundary is resolved without changing either kernel,
+the normal module, payload cap, or Pi service.
+
+The interval immediately reproduced repeated phone binder `-12` and KGSL
+`-24` failures. That is a compositor-health stop condition, not a successful
+slow-output or I/O-error acceptance case. The plugin was removed and the
+packaged hash restored; the normal GUD module and Pi service were untouched.
+The ordinary unmount was busy after LightDM stopped, so rollback kept LightDM
+down until an idle-mount inspection confirmed no holder and a lazy unmount
+detached it; LightDM then returned active on the packaged plugin. P0.2 remains
+**in progress**. Full commands and results are retained at
+`../gud/backport-4.9/env/local/evidence/xdisp-p0.2-mode-startup-2026-07-27T1249COT/`.
