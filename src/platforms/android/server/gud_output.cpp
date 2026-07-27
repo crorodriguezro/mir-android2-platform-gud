@@ -372,9 +372,18 @@ public:
             }
             kms->present(*source);
         }
+        catch (std::exception const& e)
+        {
+            /* Do not retain a disconnected fd or half-initialized KMS state. */
+            mir::log_info("GUD POC worker KMS setup/present failed: %s", e.what());
+            kms.reset();
+            retry_after = now + std::chrono::seconds{1};
+            throw;
+        }
         catch (...)
         {
             /* Do not retain a disconnected fd or half-initialized KMS state. */
+            mir::log_info("GUD POC worker KMS setup/present failed with an unknown exception");
             kms.reset();
             retry_after = now + std::chrono::seconds{1};
             throw;
