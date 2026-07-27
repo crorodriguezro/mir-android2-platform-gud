@@ -44,7 +44,6 @@ public:
                        MirPixelFormat format,
                        std::shared_ptr<InterpreterResourceCache> const&,
                        DeviceQuirks& quirks,
-                       bool synthetic_gud_external = false,
                        DisplayName display_name = DisplayName::primary);
 
     std::shared_ptr<graphics::android::NativeBuffer> driver_requests_buffer(int fence_fd) override;
@@ -64,7 +63,6 @@ private:
     std::shared_ptr<InterpreterResourceCache> const resource_cache;
     int format;
     bool const clear_fence;
-    bool const synthetic_gud_external;
     DisplayName const display_name;
     unsigned dequeued_fences{0};
     unsigned copied_fences{0};

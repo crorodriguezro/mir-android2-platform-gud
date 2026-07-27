@@ -5,6 +5,7 @@
 #include "display_device.h"
 #include "display_name.h"
 #include "gud_presentation_worker.h"
+#include "gud_render_only_control.h"
 #include "gud_mode_selection.h"
 #include "swapping_gl_context.h"
 
@@ -546,6 +547,16 @@ bool mga::GudOutput::available()
 
 void mga::GudOutput::present_external(std::list<DisplayContents> const& contents)
 {
+    if (!mga::should_start_gud_presentation_worker())
+    {
+        static std::once_flag render_only_notice;
+        std::call_once(render_only_notice, []
+        {
+            mir::log_info("GUD POC render-only control dropping synthetic external frames before the worker");
+        });
+        return;
+    }
+
     for (auto const& content : contents)
     {
         if (content.name != DisplayName::external)

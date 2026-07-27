@@ -1,6 +1,7 @@
 #include "src/platforms/android/server/gud_presentation_worker.h"
 #include "src/platforms/android/server/gud_hwc_boundary.h"
 #include "src/platforms/android/server/gud_mode_selection.h"
+#include "src/platforms/android/server/gud_render_only_control.h"
 
 #include <gtest/gtest.h>
 
@@ -26,6 +27,11 @@ TEST(GudHwcBoundary, excludes_only_synthetic_external_from_android_hwc)
     EXPECT_TRUE(mga::should_arm_android_hwc_acquire_fence(true, mga::DisplayName::primary));
     EXPECT_FALSE(mga::should_arm_android_hwc_acquire_fence(true, mga::DisplayName::external));
     EXPECT_TRUE(mga::should_arm_android_hwc_acquire_fence(true, mga::DisplayName::virt));
+}
+
+TEST(GudRenderOnlyControl, does_not_start_the_presentation_worker)
+{
+    EXPECT_FALSE(mga::should_start_gud_presentation_worker());
 }
 
 TEST(GudModeSelection, prefers_the_advertised_preferred_mode)
