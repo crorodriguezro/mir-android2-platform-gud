@@ -99,6 +99,7 @@ void mga::Buffer::upload_to_texture()
 
 void mga::Buffer::bind_for_write()
 {
+    tex_bind();
     upload_to_texture();
 }
 
