@@ -97,20 +97,20 @@ mga::HwcBlankingControl::HwcBlankingControl(
     std::shared_ptr<mga::HwcWrapper> const& hwc_device) :
     hwc_device{hwc_device},
     off{false},
-    format(determine_hwc_fb_format())
-{
-    gud_external = GudOutput::available();
-}
+    format(determine_hwc_fb_format()),
+    gud_mode{GudOutput::startup_mode()},
+    gud_external{gud_mode.valid()}
+{}
 
 mga::HwcBlankingControl::HwcBlankingControl(
     std::shared_ptr<mga::HwcWrapper> const& hwc_device,
     MirPixelFormat format) :
     hwc_device{hwc_device},
     off{false},
-    format{format}
-{
-    gud_external = GudOutput::available();
-}
+    format{format},
+    gud_mode{GudOutput::startup_mode()},
+    gud_external{gud_mode.valid()}
+{}
 
 void mga::HwcBlankingControl::power_mode(DisplayName display_name, MirPowerMode mode_request)
 {
@@ -264,7 +264,7 @@ mga::ConfigChangeSubscription subscribe_to_config_changes(
 mg::DisplayConfigurationOutput mga::HwcBlankingControl::active_config_for(DisplayName display_name)
 {
     if (gud_external && display_name == mga::DisplayName::external)
-        return populate_config(display_name, {1280, 720}, 60.0, {0, 0},
+        return populate_config(display_name, {gud_mode.width, gud_mode.height}, gud_mode.vrefresh_hz, {0, 0},
                                mir_power_mode_off, format, true);
 
     auto configs = hwc_device->display_configs(display_name);
@@ -290,10 +290,10 @@ mga::ConfigChangeSubscription mga::HwcBlankingControl::subscribe_to_config_chang
 mga::HwcPowerModeControl::HwcPowerModeControl(
     std::shared_ptr<mga::HwcWrapper> const& hwc_device) :
     hwc_device{hwc_device},
-    format(determine_hwc_fb_format())
-{
-    gud_external = GudOutput::available();
-}
+    format(determine_hwc_fb_format()),
+    gud_mode{GudOutput::startup_mode()},
+    gud_external{gud_mode.valid()}
+{}
 
 void mga::HwcPowerModeControl::power_mode(DisplayName display_name, MirPowerMode mode_request)
 {
@@ -329,7 +329,7 @@ void mga::HwcPowerModeControl::power_mode(DisplayName display_name, MirPowerMode
 mg::DisplayConfigurationOutput mga::HwcPowerModeControl::active_config_for(DisplayName display_name)
 {
     if (gud_external && display_name == mga::DisplayName::external)
-        return populate_config(display_name, {1280, 720}, 60.0, {0, 0},
+        return populate_config(display_name, {gud_mode.width, gud_mode.height}, gud_mode.vrefresh_hz, {0, 0},
                                mir_power_mode_off, format, true);
     auto configs = hwc_device->display_configs(display_name);
     if (configs.empty())

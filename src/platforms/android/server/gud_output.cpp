@@ -1,10 +1,11 @@
-/* Fixed 1280x720 RGB565 GUD sink used only by the external-output POC. */
+/* Startup-selected RGB565 GUD sink used only by the external-output POC. */
 #include "gud_output.h"
 
 #include "buffer.h"
 #include "display_device.h"
 #include "display_name.h"
 #include "gud_presentation_worker.h"
+#include "gud_mode_selection.h"
 #include "swapping_gl_context.h"
 
 #include <drm/drm.h>
@@ -26,6 +27,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 #define MIR_LOG_COMPONENT "android-gud-poc"
 #include <mir/log.h>
@@ -35,9 +37,6 @@ namespace mga = mir::graphics::android;
 
 namespace
 {
-constexpr uint32_t width = 1280;
-constexpr uint32_t height = 720;
-
 struct Props
 {
     uint32_t connector_crtc, crtc_mode, crtc_active, plane_fb, plane_crtc;
@@ -72,6 +71,55 @@ int open_gud_card()
         close(fd);
     }
     return -1;
+}
+
+bool select_connector_mode(
+    drmModeConnector const& connector, drmModeModeInfo& selected,
+    mga::GudOutput::Mode& output_mode)
+{
+    std::vector<mga::GudModeCandidate> candidates;
+    candidates.reserve(connector.count_modes);
+    for (int i = 0; i < connector.count_modes; ++i)
+    {
+        auto const& mode = connector.modes[i];
+        candidates.push_back({mode.hdisplay, mode.vdisplay, static_cast<uint32_t>(i),
+                              static_cast<bool>(mode.type & DRM_MODE_TYPE_PREFERRED)});
+    }
+    auto const* selected_candidate = mga::select_startup_gud_mode(candidates.data(), candidates.size());
+    if (!selected_candidate)
+        return false;
+
+    selected = connector.modes[selected_candidate->index];
+    auto refresh_hz = selected.htotal && selected.vtotal ?
+        static_cast<double>(selected.clock) * 1000.0 / selected.htotal / selected.vtotal : 60.0;
+    if (selected.flags & DRM_MODE_FLAG_INTERLACE)
+        refresh_hz *= 2.0;
+    if (selected.flags & DRM_MODE_FLAG_DBLSCAN)
+        refresh_hz /= 2.0;
+    if (selected.vscan > 1)
+        refresh_hz /= selected.vscan;
+    output_mode = mga::GudOutput::Mode{selected.hdisplay, selected.vdisplay, refresh_hz};
+    return true;
+}
+
+mga::GudOutput::Mode read_connected_gud_mode(int fd)
+{
+    auto resources = std::unique_ptr<drmModeRes, decltype(&drmModeFreeResources)> {
+        drmModeGetResources(fd), drmModeFreeResources};
+    if (!resources)
+        return {};
+
+    for (int i = 0; i < resources->count_connectors; ++i)
+    {
+        auto connector = std::unique_ptr<drmModeConnector, decltype(&drmModeFreeConnector)> {
+            drmModeGetConnector(fd, resources->connectors[i]), drmModeFreeConnector};
+        drmModeModeInfo ignored{};
+        mga::GudOutput::Mode mode{};
+        if (connector && connector->connection == DRM_MODE_CONNECTED &&
+            select_connector_mode(*connector, ignored, mode))
+            return mode;
+    }
+    return {};
 }
 
 uint32_t property(int fd, uint32_t object, uint32_t type, char const* name)
@@ -129,6 +177,7 @@ private:
     int fd{-1};
     uint32_t connector{}, crtc{}, plane{}, blob{};
     Props props{};
+    mga::GudOutput::Mode mode{};
     unsigned next{};
 
     void setup();
@@ -181,26 +230,25 @@ void Kms::setup()
         throw drm_error("cannot query GUD KMS resources");
 
     uint32_t encoder_id{};
-    drmModeModeInfo mode{};
+    drmModeModeInfo drm_mode{};
     for (int i = 0; i < resources->count_connectors && !connector; ++i)
     {
         auto candidate = std::unique_ptr<drmModeConnector, decltype(&drmModeFreeConnector)>{
             drmModeGetConnector(fd, resources->connectors[i]), drmModeFreeConnector};
         if (!candidate || candidate->connection != DRM_MODE_CONNECTED)
             continue;
-        for (int j = 0; j < candidate->count_modes; ++j)
-            if (candidate->modes[j].hdisplay == width && candidate->modes[j].vdisplay == height)
-            {
-                connector = candidate->connector_id;
-                encoder_id = candidate->encoder_id;
-                if (!encoder_id && candidate->count_encoders)
-                    encoder_id = candidate->encoders[0];
-                mode = candidate->modes[j];
-                break;
-            }
+        if (!select_connector_mode(*candidate, drm_mode, mode))
+            continue;
+        connector = candidate->connector_id;
+        encoder_id = candidate->encoder_id;
+        if (!encoder_id && candidate->count_encoders)
+            encoder_id = candidate->encoders[0];
     }
     if (!connector || !encoder_id)
-        throw std::runtime_error{"no connected 1280x720 GUD output"};
+        throw std::runtime_error{"no connected GUD output with an advertised mode"};
+
+    mir::log_info("GUD POC worker selected startup mode %ux%u at %.3f Hz",
+                  mode.width, mode.height, mode.vrefresh_hz);
 
     auto encoder = std::unique_ptr<drmModeEncoder, decltype(&drmModeFreeEncoder)>{
         drmModeGetEncoder(fd, encoder_id), drmModeFreeEncoder};
@@ -245,7 +293,7 @@ void Kms::setup()
         !props.plane_fb || !props.plane_crtc || !props.src_x || !props.src_y || !props.src_w ||
         !props.src_h || !props.crtc_x || !props.crtc_y || !props.crtc_w || !props.crtc_h)
         throw std::runtime_error{"GUD KMS setup is incomplete"};
-    if (drmModeCreatePropertyBlob(fd, &mode, sizeof(mode), &blob))
+    if (drmModeCreatePropertyBlob(fd, &drm_mode, sizeof(drm_mode), &blob))
         throw drm_error("cannot create GUD mode blob");
 }
 
@@ -276,8 +324,8 @@ void Kms::teardown()
 
 void Kms::allocate(Frame& frame)
 {
-    frame.dumb.width = width;
-    frame.dumb.height = height;
+    frame.dumb.width = mode.width;
+    frame.dumb.height = mode.height;
     frame.dumb.bpp = 16;
     if (drmIoctl(fd, DRM_IOCTL_MODE_CREATE_DUMB, &frame.dumb))
         throw drm_error("GUD dumb allocation failed");
@@ -289,7 +337,7 @@ void Kms::allocate(Frame& frame)
     uint32_t handles[] = {frame.dumb.handle, 0, 0, 0};
     uint32_t pitches[] = {frame.dumb.pitch, 0, 0, 0};
     uint32_t offsets[] = {0, 0, 0, 0};
-    if (frame.map == MAP_FAILED || drmModeAddFB2(fd, width, height, DRM_FORMAT_RGB565,
+    if (frame.map == MAP_FAILED || drmModeAddFB2(fd, mode.width, mode.height, DRM_FORMAT_RGB565,
         handles, pitches, offsets, &frame.fb, 0))
         throw drm_error("GUD framebuffer allocation failed");
 }
@@ -308,9 +356,9 @@ void Kms::commit(Frame const& frame, bool modeset)
         ok = ok && add(connector, props.connector_crtc, crtc) && add(crtc, props.crtc_mode, blob) &&
             add(crtc, props.crtc_active, 1) && add(plane, props.plane_crtc, crtc) &&
             add(plane, props.src_x, 0) && add(plane, props.src_y, 0) &&
-            add(plane, props.src_w, width << 16) && add(plane, props.src_h, height << 16) &&
+            add(plane, props.src_w, mode.width << 16) && add(plane, props.src_h, mode.height << 16) &&
             add(plane, props.crtc_x, 0) && add(plane, props.crtc_y, 0) &&
-            add(plane, props.crtc_w, width) && add(plane, props.crtc_h, height);
+            add(plane, props.crtc_w, mode.width) && add(plane, props.crtc_h, mode.height);
     int const rc = ok ? drmModeAtomicCommit(fd, request,
         modeset ? DRM_MODE_ATOMIC_ALLOW_MODESET : 0, nullptr) : -1;
     drmModeAtomicFree(request);
@@ -320,18 +368,18 @@ void Kms::commit(Frame const& frame, bool modeset)
 
 void Kms::present(mga::Buffer& source)
 {
-    if (source.size().width.as_uint32_t() != width || source.size().height.as_uint32_t() != height)
-        throw std::runtime_error{"GUD POC needs a 1280x720 Mir external output"};
+    if (source.size().width.as_uint32_t() != mode.width || source.size().height.as_uint32_t() != mode.height)
+        throw std::runtime_error{"GUD POC source no longer matches its startup-selected mode"};
     auto& frame = frames[next];
     auto const stride = source.stride().as_uint32_t();
     auto const format = source.pixel_format();
     source.read([&](unsigned char const* data)
     {
-        for (uint32_t y = 0; y < height; ++y)
+        for (uint32_t y = 0; y < mode.height; ++y)
         {
             auto const* src = data + y * stride;
             auto* dst = static_cast<uint16_t*>(frame.map) + y * frame.dumb.pitch / 2;
-            for (uint32_t x = 0; x < width; ++x)
+            for (uint32_t x = 0; x < mode.width; ++x)
             {
                 uint8_t r, g, b;
                 if (format == mir_pixel_format_argb_8888 || format == mir_pixel_format_xrgb_8888)
@@ -439,15 +487,30 @@ std::mutex output_mutex;
 std::unique_ptr<GudPresentation> output;
 std::once_flag no_external_frame_notice;
 std::once_flag non_android_frame_notice;
+std::once_flag startup_mode_once;
+mga::GudOutput::Mode selected_startup_mode;
+}
+
+mga::GudOutput::Mode mga::GudOutput::startup_mode()
+{
+    std::call_once(startup_mode_once, []
+    {
+        int const fd = open_gud_card();
+        if (fd < 0)
+            return;
+        selected_startup_mode = read_connected_gud_mode(fd);
+        close(fd);
+        if (selected_startup_mode.valid())
+            mir::log_info("GUD POC selected startup output mode %ux%u at %.3f Hz",
+                          selected_startup_mode.width, selected_startup_mode.height,
+                          selected_startup_mode.vrefresh_hz);
+    });
+    return selected_startup_mode;
 }
 
 bool mga::GudOutput::available()
 {
-    int const fd = open_gud_card();
-    if (fd < 0)
-        return false;
-    close(fd);
-    return true;
+    return startup_mode().valid();
 }
 
 void mga::GudOutput::present_external(std::list<DisplayContents> const& contents)

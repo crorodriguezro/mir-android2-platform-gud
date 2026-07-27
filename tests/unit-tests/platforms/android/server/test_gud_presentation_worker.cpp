@@ -1,5 +1,6 @@
 #include "src/platforms/android/server/gud_presentation_worker.h"
 #include "src/platforms/android/server/gud_hwc_boundary.h"
+#include "src/platforms/android/server/gud_mode_selection.h"
 
 #include <gtest/gtest.h>
 
@@ -21,6 +22,33 @@ TEST(GudHwcBoundary, excludes_only_synthetic_external_from_android_hwc)
     EXPECT_TRUE(mga::should_submit_to_android_hwc(true, mga::DisplayName::primary));
     EXPECT_FALSE(mga::should_submit_to_android_hwc(true, mga::DisplayName::external));
     EXPECT_TRUE(mga::should_submit_to_android_hwc(true, mga::DisplayName::virt));
+}
+
+TEST(GudModeSelection, prefers_the_advertised_preferred_mode)
+{
+    mga::GudModeCandidate const modes[] = {
+        {1280, 720, 0, false},
+        {1920, 1080, 1, true},
+    };
+
+    auto const* selected = mga::select_startup_gud_mode(modes, 2);
+
+    ASSERT_NE(nullptr, selected);
+    EXPECT_EQ(1u, selected->index);
+}
+
+TEST(GudModeSelection, uses_the_first_usable_mode_without_a_preference)
+{
+    mga::GudModeCandidate const modes[] = {
+        {0, 720, 0, true},
+        {1920, 1080, 1, false},
+        {1280, 720, 2, false},
+    };
+
+    auto const* selected = mga::select_startup_gud_mode(modes, 3);
+
+    ASSERT_NE(nullptr, selected);
+    EXPECT_EQ(1u, selected->index);
 }
 
 TEST(GudPresentationWorker, coalesces_pending_frames_to_the_newest)

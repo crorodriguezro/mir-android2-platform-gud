@@ -23,6 +23,7 @@
 #include "mir/graphics/frame.h"
 #include "mir/geometry/size.h"
 #include "display_name.h"
+#include "gud_output.h"
 #include <memory>
 #include <functional>
 
@@ -72,6 +73,7 @@ private:
     std::shared_ptr<HwcWrapper> const hwc_device;
     bool off;
     MirPixelFormat format;
+    GudOutput::Mode gud_mode;
     bool gud_external{false};
 };
 
@@ -91,6 +93,7 @@ public:
 private:
     std::shared_ptr<HwcWrapper> const hwc_device;
     MirPixelFormat format;
+    GudOutput::Mode gud_mode;
     bool gud_external{false};
 };
 
