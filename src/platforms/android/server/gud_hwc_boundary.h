@@ -21,6 +21,11 @@ inline bool should_submit_to_android_hwc(bool synthetic_gud_external, DisplayNam
 {
     return !synthetic_gud_external || display != DisplayName::external;
 }
+
+inline bool should_arm_android_hwc_acquire_fence(bool synthetic_gud_external, DisplayName display)
+{
+    return should_submit_to_android_hwc(synthetic_gud_external, display);
+}
 }
 }
 }
