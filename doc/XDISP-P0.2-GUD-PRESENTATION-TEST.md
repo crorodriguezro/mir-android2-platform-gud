@@ -146,10 +146,10 @@ physical external display in the retained log). New one-time Mir messages
 distinguish an absent external `DisplayContents` frame, a non-Android frame,
 and a started presentation worker on the next hardware attempt.
 
-At `mir-android2-platform-gud` working state after `b885369`, the Noble build
+At `mir-android2-platform-gud` commit `01d1f23`, the Noble build
 produced `graphics-android2.so.16` SHA-256
 `2ce05a584bcea36b5138e2b53e4849e511671a79a91f03a212881bba3fba2d40` with
 the phone's versioned Mir 1 sonames and Boost 1.83. The direct focused filter
 ran six passing checks: the five worker lifecycle checks plus the synthetic
-HWC-boundary policy. This is retained offline evidence only; do not deploy
-until the scoped source commit and a commit-qualified artifact exist.
+HWC-boundary policy. This is retained offline evidence only; the artifact is
+commit-qualified but has not yet passed a hardware acceptance case.

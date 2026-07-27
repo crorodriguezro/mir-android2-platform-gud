@@ -47,8 +47,9 @@ HWC2; retained HWC2 logs already showed no active physical external display,
 so the change is not presented as a conclusive cause of the previous resource
 exhaustion. One-time worker-idle/start messages make the next clean test
 diagnostic. The compatible Noble module built with those changes has SHA-256
-`2ce05a584bcea36b5138e2b53e4849e511671a79a91f03a212881bba3fba2d40` before
-the scoped source commit; it is not a deployment artifact.
+`2ce05a584bcea36b5138e2b53e4849e511671a79a91f03a212881bba3fba2d40` from
+scoped source commit `01d1f23`; it is a staged test artifact, not a normal
+phone deployment.
 
 ## What the POC proved
 
