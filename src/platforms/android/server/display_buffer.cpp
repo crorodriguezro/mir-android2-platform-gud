@@ -42,13 +42,14 @@ mga::DisplayBuffer::DisplayBuffer(
     mgl::ProgramFactory const& program_factory,
     glm::mat2 const& transform,
     geom::Rectangle area,
-    mga::OverlayOptimization overlay_option)
+    mga::OverlayOptimization overlay_option,
+    bool offscreen)
     : display_name(display_name),
       layer_list(std::move(layer_list)),
       fb_bundle{fb_bundle},
       display_device{display_device},
       native_window{native_window},
-      gl_context{shared_gl_context, fb_bundle, native_window},
+       gl_context{shared_gl_context, fb_bundle, native_window, offscreen},
       overlay_program{program_factory, gl_context, geom::Rectangle{{0,0},fb_bundle->fb_size()}},
       overlay_enabled{overlay_option == mga::OverlayOptimization::enabled},
       transform{transform},

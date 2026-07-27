@@ -25,6 +25,7 @@
 #include "mir/graphics/transformation.h"
 #include "display.h"
 #include "gud_output.h"
+#include "gud_offscreen_target.h"
 #include "virtual_output.h"
 #include "display_component_factory.h"
 #include "interpreter_cache.h"
@@ -127,9 +128,15 @@ std::unique_ptr<mga::ConfigurableDisplayBuffer> create_display_buffer(
     std::shared_ptr<mga::FramebufferBundle> fbs{display_buffer_builder.create_framebuffers(config)};
     auto cache = std::make_shared<mga::InterpreterCache>();
     mga::DeviceQuirks quirks(mga::PropertiesOps{}, gl_context);
-    auto interpreter = std::make_shared<mga::ServerRenderWindow>(
-        fbs, config.current_format, cache, quirks, name);
-    auto native_window = std::make_shared<mga::MirNativeWindow>(interpreter, report);
+    auto const offscreen = mga::should_use_gud_offscreen_target(
+        mga::GudOutput::available(), name);
+    std::shared_ptr<mga::MirNativeWindow> native_window;
+    if (!offscreen)
+    {
+        auto interpreter = std::make_shared<mga::ServerRenderWindow>(
+            fbs, config.current_format, cache, quirks, name);
+        native_window = std::make_shared<mga::MirNativeWindow>(interpreter, report);
+    }
     return std::unique_ptr<mga::ConfigurableDisplayBuffer>(new mga::DisplayBuffer(
         name,
         display_buffer_builder.create_layer_list(),
@@ -140,7 +147,8 @@ std::unique_ptr<mga::ConfigurableDisplayBuffer> create_display_buffer(
         *gl_program_factory,
         mg::transformation(config.orientation),
         config.extents(),
-        overlay_option));
+        overlay_option,
+        offscreen));
 }
 }
 

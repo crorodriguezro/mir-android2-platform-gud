@@ -57,7 +57,8 @@ public:
         gl::ProgramFactory const& program_factory,
         glm::mat2 const& transform,
         geometry::Rectangle area,
-        OverlayOptimization overlay_option);
+        OverlayOptimization overlay_option,
+        bool offscreen = false);
 
     geometry::Rectangle view_area() const override;
     void make_current() override;

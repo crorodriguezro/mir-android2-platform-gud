@@ -2,6 +2,7 @@
 #include "src/platforms/android/server/gud_hwc_boundary.h"
 #include "src/platforms/android/server/gud_mode_selection.h"
 #include "src/platforms/android/server/gud_render_only_control.h"
+#include "src/platforms/android/server/gud_offscreen_target.h"
 
 #include <gtest/gtest.h>
 
@@ -32,6 +33,14 @@ TEST(GudHwcBoundary, excludes_only_synthetic_external_from_android_hwc)
 TEST(GudRenderOnlyControl, does_not_start_the_presentation_worker)
 {
     EXPECT_FALSE(mga::should_start_gud_presentation_worker());
+}
+
+TEST(GudOffscreenTarget, replaces_only_the_synthetic_external_window_surface)
+{
+    EXPECT_FALSE(mga::should_use_gud_offscreen_target(false, mga::DisplayName::external));
+    EXPECT_FALSE(mga::should_use_gud_offscreen_target(true, mga::DisplayName::primary));
+    EXPECT_TRUE(mga::should_use_gud_offscreen_target(true, mga::DisplayName::external));
+    EXPECT_FALSE(mga::should_use_gud_offscreen_target(true, mga::DisplayName::virt));
 }
 
 TEST(GudModeSelection, prefers_the_advertised_preferred_mode)

@@ -17,6 +17,7 @@
  */
 
 #include "gl_context.h"
+#include "buffer.h"
 #include "framebuffer_bundle.h"
 #include "android_format_conversion-inl.h"
 #include "mir/graphics/display_report.h"
@@ -229,20 +230,33 @@ void mga::PbufferGLContext::release_current() const
 mga::FramebufferGLContext::FramebufferGLContext(
     GLContext const& shared_gl_context,
     std::shared_ptr<FramebufferBundle> const& fb_bundle,
-    std::shared_ptr<ANativeWindow> const& native_window)
+    std::shared_ptr<ANativeWindow> const& native_window,
+    bool offscreen)
      : GLContext(shared_gl_context),
        fb_bundle(fb_bundle),
        egl_surface{egl_display,
-                   eglCreateWindowSurface(egl_display, egl_config, native_window.get(), NULL)}
+                    offscreen ? eglCreatePbufferSurface(egl_display, egl_config, dummy_pbuffer_attribs) :
+                                eglCreateWindowSurface(egl_display, egl_config, native_window.get(), NULL)},
+       offscreen(offscreen)
 {
-    const EGLint behavior = does_partial_updates() ? EGL_BUFFER_PRESERVED : EGL_BUFFER_DESTROYED;
-    eglSurfaceAttrib(egl_display, egl_surface, EGL_SWAP_BEHAVIOR, behavior);
+    if (!offscreen)
+    {
+        const EGLint behavior = does_partial_updates() ? EGL_BUFFER_PRESERVED : EGL_BUFFER_DESTROYED;
+        eglSurfaceAttrib(egl_display, egl_surface, EGL_SWAP_BEHAVIOR, behavior);
+    }
 }
 
 void mga::FramebufferGLContext::swap_buffers() const
 {
-    if (eglSwapBuffers(egl_display, egl_surface) == EGL_FALSE)
+    if (offscreen)
+    {
+        glFinish();
+        render_lease.reset();
+    }
+    else if (eglSwapBuffers(egl_display, egl_surface) == EGL_FALSE)
+    {
         BOOST_THROW_EXCEPTION(mg::egl_error("eglSwapBuffers failure"));
+    }
 }
 
 std::shared_ptr<mg::Buffer> mga::FramebufferGLContext::last_rendered_buffer() const
@@ -253,6 +267,26 @@ std::shared_ptr<mg::Buffer> mga::FramebufferGLContext::last_rendered_buffer() co
 void mga::FramebufferGLContext::make_current() const
 {
     GLContext::make_current(egl_surface);
+    if (!offscreen)
+        return;
+
+    if (!render_lease)
+        render_lease = fb_bundle->buffer_for_render();
+    auto const android_buffer = std::dynamic_pointer_cast<mga::Buffer>(render_lease);
+    if (!android_buffer)
+        BOOST_THROW_EXCEPTION(std::runtime_error("synthetic GUD offscreen target needs an Android buffer"));
+    android_buffer->bind_for_write();
+
+    GLint texture{};
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &texture);
+    if (!fbo)
+        glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture, 0);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+        BOOST_THROW_EXCEPTION(std::runtime_error("cannot bind synthetic GUD offscreen framebuffer"));
+    auto const size = fb_bundle->fb_size();
+    glViewport(0, 0, size.width.as_int(), size.height.as_int());
 }
 
 void mga::FramebufferGLContext::release_current() const
