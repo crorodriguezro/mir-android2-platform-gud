@@ -17,6 +17,12 @@ image adds the public `24.04-1.x` UBports archive with its signed
 Do not substitute the unversioned Noble Mir development packages: they emit
 different sonames and cannot be loaded by the phone's Mir 1 compositor.
 
+The current laptop is native AArch64, so the container emits a native AArch64
+module. Before staging, use `readelf -d` on the module and require the phone's
+versioned sonames (currently `libmir1platform.so.18`, `libmir1common.so.7`,
+`libmir1core.so.1`, and Boost 1.83). A successful build against another
+Ubuntu/UBports release is not a deployable result.
+
 Prerequisite: a working Docker daemon. Build and test with:
 
 ```bash
@@ -61,6 +67,13 @@ state, do **not** stop, restart, reboot, shut down, or retry the Pi service.
 Preserve the logs and use only the physical recovery path from the P0.1
 procedure.
 
+Also treat compositor-wide resource failures as a stop condition, even before
+the first GUD transfer. If the test interval produces repeated binder
+allocation failures, KGSL file-descriptor exhaustion, a compositor crash, or
+another phone-health regression, immediately restore the packaged plugin and
+restart only LightDM. Preserve the logs and do not mislabel that result as a
+contained GUD I/O error or as proof that the worker ran.
+
 ## Evidence matrix
 
 Create an ignored evidence directory under
@@ -76,3 +89,35 @@ Create an ignored evidence directory under
 
 Use dynamic DRM discovery in the logs; do not assert `card1`. Keep P0.2
 **in progress** until every row that applies has the required evidence.
+
+## 2026-07-27 deployment result
+
+The first Focal artifact was deliberately not retried after LightDM rejected
+it before platform initialization: it required unversioned
+`libmirplatform.so.18`, while the phone provides versioned Mir 1 sonames. The
+Noble rebuild at implementation `3fffb05` and build-environment commit
+`d47b771` produced the AArch64 module with SHA-256
+`cbcf648f26174413df718e5b5c71e41c6cf338dfe3e17dac32c52ef82581dac0`.
+`LD_TRACE_LOADED_OBJECTS` on the phone resolved its Mir 1 and Boost
+dependencies before the module was mounted.
+
+After the required host/enumeration gate found `1d50:614d` at its dynamically
+assigned path, the commit-qualified module was bind-mounted over the package
+path and LightDM started successfully. Mir reported the synthetic 1280x720
+DisplayPort output as connected and used. Over the following 52 seconds it
+did **not** log `GUD POC output enabled`, and the Pi recorded no new FunctionFS
+receive session; no GUD worker/KMS transfer therefore ran. During the same
+interval the phone kernel reported sustained binder `-12` allocation failures
+and KGSL `-24` file-descriptor exhaustion. The temporal association does not
+by itself establish a worker cause, but it is a phone-health regression and
+fails the hardware gate.
+
+The test bind mount was immediately removed, LightDM was restarted with the
+packaged module hash
+`cd0ddc0342d19df63798e9bbcf496e3657b543bd9827d53004b997454f00ae74`, and the
+stock compositor returned with 90 open descriptors. The normal
+`/home/phablet/gud.ko` was never replaced or rebuilt; the Pi stayed `active`
+and `configured` and was not restarted. Retained commands and raw logs are in
+`gud/backport-4.9/env/local/evidence/xdisp-p0.2-hardware-2026-07-27T1125COT/`.
+This is failure/rollback evidence only: slow output, absent startup, I/O
+error, reappearance, and shutdown acceptance remain unverified.

@@ -16,6 +16,19 @@ The POC builds against the phone's Mir ABI and was installed temporarily on the
 phone. It is now **rolled back**: the original Android graphics platform plugin
 has been restored. Do not deploy this branch as a normal phone configuration.
 
+### 2026-07-27 P0.2 hardware attempt
+
+The `3fffb05` async-worker implementation was rebuilt with the phone-matched
+Noble/UBports environment in `d47b771`. Its commit-qualified test module
+loaded successfully, and Mir exposed the synthetic 1280x720 external output.
+It did not, however, reach `GUD POC output enabled` or start a Pi FunctionFS
+receive session. During its 52-second run the phone generated sustained binder
+`-12` allocation failures and KGSL `-24` file-descriptor exhaustion. The
+module was immediately unmounted and LightDM restarted on the packaged plugin;
+the Pi service was neither stopped nor restarted. This is a failed compositor
+health gate, not a GUD worker, transport, or responsiveness success. P0.2
+remains in progress pending root-cause work and a clean hardware retry.
+
 ## What the POC proved
 
 - With a live GUD DRM node, Lomiri exposed a connected, used `DisplayPort-2`
