@@ -252,6 +252,25 @@ commands and state are retained at
 `../gud/backport-4.9/env/local/evidence/xdisp-p0.2-reboot-baseline-2026-07-27T1313COT/`.
 P0.2 remains **in progress**.
 
+## 2026-07-27 external render-fence flow stop
+
+External-only counters at `694d591` proved that the remaining 574-sync-file
+plateau is not a large gralloc pool: the synthetic output reused three Android
+buffers while returned fences increased one-for-one with external renders. The
+likely remaining boundary is the acquire-fence duplicate supplied to Android
+EGL on dequeue, but source review does not yet prove its owner. `e9fb3a5` adds
+the minimum counter set to distinguish returned, dequeued, and EGL-supplied
+fences; its compatible artifact SHA-256 is
+`67a5730bafc735491788af8b5cfe3284dc9a5a0c1d8956f29dba19b17da639e7` and its
+focused checks pass.
+
+That diagnostic was not mounted. Pi read-only journal evidence exposed an
+`InFlight` receive without a safely observed return in the initial window, so
+the hardware session stopped under the P0.2/P0.1 containment rule. No Pi action
+was taken. Packaged Mir and normal GUD remain restored. Evidence is at
+`../gud/backport-4.9/env/local/evidence/xdisp-p0.2-render-fence-flow-2026-07-27T1358COT/`.
+P0.2 remains **in progress**.
+
 ## 2026-07-27 normal GUD module recovery
 
 After a fresh read-only Pi safety preflight and mandatory `FOUND:` gate, the
