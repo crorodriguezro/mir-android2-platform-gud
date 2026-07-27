@@ -205,3 +205,27 @@ down until an idle-mount inspection confirmed no holder and a lazy unmount
 detached it; LightDM then returned active on the packaged plugin. P0.2 remains
 **in progress**. Full commands and results are retained at
 `../gud/backport-4.9/env/local/evidence/xdisp-p0.2-mode-startup-2026-07-27T1249COT/`.
+
+## 2026-07-27 compositor-health comparison gate
+
+Before another qualified-plugin deployment, the packaged plugin was sampled
+after the documented dynamic host gate returned `FOUND: /sys/bus/usb/devices/1-1.3`.
+The packaged hash remained
+`cd0ddc0342d19df63798e9bbcf496e3657b543bd9827d53004b997454f00ae74`, but it
+was not a clean comparison baseline: repeated binder `-12` and KGSL `-24`
+errors continued across a LightDM-only restart. The replacement compositor had
+89 FDs, while the Android HWC2 service named by the binder log had 22 FDs; the
+source retains only one duplicated present fence per Android display. This does
+not prove a Mir, worker, or HWC leak. It does establish that a new experimental
+interval would be confounded by pre-existing phone health, so no test plugin was
+mounted and no Pi payload was sent.
+
+Commit `20e54b0` adds bounded worker counters for submitted/coalesced/active/
+completed/failed frames and compositor FD count, with focused assertions. Its
+phone-matched artifact SHA-256 is
+`72648f4b5d9c00abcbbc3201f14182c262ed6c512987587374edca58eee366ea`; the six
+`GudPresentationWorker.*:GudHwcBoundary.*` checks pass. It is staged evidence
+only. Retained commands, counts, and the next clean-baseline gate are at
+`../gud/backport-4.9/env/local/evidence/xdisp-p0.2-health-comparison-2026-07-27T1259COT/`.
+Keep P0.2 **in progress** and the packaged plugin active until a clean packaged
+baseline permits the bounded comparison.
