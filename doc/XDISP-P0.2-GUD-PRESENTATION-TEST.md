@@ -252,6 +252,28 @@ commands and state are retained at
 `../gud/backport-4.9/env/local/evidence/xdisp-p0.2-reboot-baseline-2026-07-27T1313COT/`.
 P0.2 remains **in progress**.
 
+## 2026-07-27 synthetic render-only control
+
+Commit `a0fb290` is a render-only control: it retains the synthetic Android EGL
+window surface but drops its completed external frame before worker creation.
+The compatible artifact SHA-256 is
+`84d67e85f52760ad474436d28e9fa1dac82485fe374e79e216278427711d1531`; 20
+focused control, worker, HWC-boundary, and server-window checks pass. After a
+fresh OnePlus reboot, clean packaged 90-FD control, Pi active/configured/Idle
+preflight, host gate, and unchanged normal GUD discovery, it logged the explicit
+render-only drop and no worker/KMS/USB/Pi payload activity.
+
+Synthetic Android EGL rendering alone reached a stable 757--758 FDs and
+658--659 sync files, with zero binder/KGSL errors in the bounded interval. This
+isolates the remaining retention to the synthetic
+`eglCreateWindowSurface`/`MirNativeWindow` path, not the worker, KMS, USB, Pi,
+or later GUD lease handoff. Stop adding fence exceptions; the next implementation
+must use an explicit offscreen gralloc/EGL target for the synthetic output and
+transfer its lease directly to the worker. Packaged Mir and normal GUD were
+restored. Evidence is at
+`../gud/backport-4.9/env/local/evidence/xdisp-p0.2-render-only-2026-07-27T1633COT/`.
+P0.2 remains **in progress**.
+
 ## 2026-07-27 synthetic return-fence retry
 
 The `e9fb3a5` flow diagnostic established that the synthetic output reuses three
