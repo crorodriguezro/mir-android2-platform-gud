@@ -243,8 +243,22 @@ binder/KGSL errors. The packaged plugin was restored and verified immediately.
 This is a clean plugin-load control only: after the OnePlus reboot, the exposed
 DRM topology had only `card0` and Mir recorded DisplayPort disconnected. No GUD
 card was available to synthesize the output, so no worker marker, KMS setup,
-Pi receive, or payload occurred. This is P0.3 reappearance/live-card discovery
-evidence, not a P0.2 worker success or a reason to use a fixed card path. Full
+Pi receive, or payload occurred. The temporary missing GUD card was expected:
+the OnePlus reboot had unloaded the out-of-tree normal GUD module. It was later
+restored by loading the unchanged `/home/phablet/gud.ko`, which recreated a
+connected GUD card and connector. This is not P0.3 reappearance evidence, not a
+P0.2 worker success, and not a reason to use a fixed card path. Full
 commands and state are retained at
 `../gud/backport-4.9/env/local/evidence/xdisp-p0.2-reboot-baseline-2026-07-27T1313COT/`.
 P0.2 remains **in progress**.
+
+## 2026-07-27 normal GUD module recovery
+
+After a fresh read-only Pi safety preflight and mandatory `FOUND:` gate, the
+unchanged normal `/home/phablet/gud.ko` was loaded and successfully created
+`/dev/dri/card1`. A read-only `modetest -M gud -c` probe reported the GUD
+`Virtual-2` connector connected with one preferred 1280x720 mode. This restores
+the expected post-reboot host module state; it does not run P0.2 presentation.
+The normal module is not qualified for P0.2 payload work because it lacks the
+separately verified <=12,800-byte adaptive transfer path. Evidence is at
+`../gud/backport-4.9/env/local/evidence/xdisp-p0.2-normal-gud-recovery-2026-07-27T1322COT/`.
