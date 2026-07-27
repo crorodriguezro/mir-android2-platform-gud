@@ -1,11 +1,11 @@
 #!/bin/sh
-# Build the Android2 platform against the same UBports Focal/Mir1 ABI as the phone.
+# Build the Android2 platform against the checked Ubuntu Touch Noble/Mir1 ABI.
 set -eu
 
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 build_dir=${XDISP_P02_BUILD_DIR:-/tmp/mir-android2-platform-gud-p02-build}
 build_jobs=${XDISP_P02_BUILD_JOBS:-1}
-image_tag=mir-android2-platform-gud-p02-build:ubuntu20.04-focal
+image_tag=mir-android2-platform-gud-p02-build:ubuntu24.04-noble
 
 mkdir -p "$build_dir"
 

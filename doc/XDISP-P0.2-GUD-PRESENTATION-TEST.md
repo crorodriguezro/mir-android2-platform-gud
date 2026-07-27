@@ -7,13 +7,15 @@ acceptance evidence.
 
 ## Offline gate
 
-On this Fedora/Asahi laptop, use the tracked Ubuntu 20.04 container rather
-than trying to mix UBports' Mir 1/libhybris ABI with Fedora libraries. The
-image adds the public UBports Focal archive with its signed `keyring.gpg`; it
-installs the current package names `libmircore-dev`, `libmirplatform-dev`,
-`libmiral-dev`, and `mirtest-dev`, which satisfy CMake's `mircore`,
-`mirplatform`, and `mirtest` pkg-config probes even though `debian/control`
-still spells their historical names `libmir1*-dev`.
+On this Fedora/Asahi laptop, use the tracked Ubuntu 24.04 container rather
+than trying to mix the phone's Ubuntu Touch Mir 1/libhybris ABI with Fedora
+libraries. Before building or deploying, record `/etc/os-release` and the
+installed `libmir1*`, `mir1-*`, and Boost package versions from the phone. The
+image adds the public `24.04-1.x` UBports archive with its signed
+`keyring.gpg`, then installs the matching versioned development packages
+(`libmir1platform-dev`, `libmir1core-dev`, and `mir1test-dev`, among others).
+Do not substitute the unversioned Noble Mir development packages: they emit
+different sonames and cannot be loaded by the phone's Mir 1 compositor.
 
 Prerequisite: a working Docker daemon. Build and test with:
 

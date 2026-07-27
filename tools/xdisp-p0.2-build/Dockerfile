@@ -1,11 +1,11 @@
-FROM ubuntu:20.04
+FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl gnupg \
  && curl -fsSL https://repo.ubports.com/keyring.gpg | gpg --dearmor -o /usr/share/keyrings/ubports.gpg \
- && echo "deb [signed-by=/usr/share/keyrings/ubports.gpg] https://repo.ubports.com/ focal main" > /etc/apt/sources.list.d/ubports.list \
+ && echo "deb [signed-by=/usr/share/keyrings/ubports.gpg] https://repo.ubports.com/ 24.04-1.x main" > /etc/apt/sources.list.d/ubports.list \
  && apt-get update \
  && apt-get install -y --no-install-recommends \
       abi-compliance-checker \
@@ -29,19 +29,19 @@ RUN apt-get update \
       libhardware-dev \
       libhybris-dev \
       liblttng-ust-dev \
-      libmirclient-dev \
-      libmircommon-dev \
-      libmircore-dev \
-      libmiral-dev \
-      libmirplatform-dev \
-      libmirrenderer-dev \
-      libmirserver-dev \
+      libmir1client-dev \
+      libmir1common-dev \
+      libmir1core-dev \
+      libmir1al-dev \
+      libmir1platform-dev \
+      libmir1renderer-dev \
+      libmir1server-dev \
       libprotobuf-dev \
       libudev-dev \
       libumockdev-dev \
       libwayland-dev \
-      mir-renderer-gl-dev \
-      mirtest-dev \
+      mir1-renderer-gl-dev \
+      mir1test-dev \
       ninja-build \
       pkg-config \
       python3 \
