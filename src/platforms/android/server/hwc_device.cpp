@@ -25,6 +25,7 @@
 #include "buffer.h"
 #include "hwc_fallback_gl_renderer.h"
 #include "gud_output.h"
+#include "gud_render_only_control.h"
 #include "gud_hwc_boundary.h"
 #include "mir/raii.h"
 #include <limits>
@@ -134,10 +135,13 @@ void mga::HwcDevice::commit(std::list<DisplayContents> const& contents)
 
     for (auto& content : contents)
     {
+        auto const drop_synthetic_render = synthetic_gud_external &&
+            content.name == mga::DisplayName::external &&
+            !mga::should_render_gud_offscreen_frame();
         if (content.list.needs_swapbuffers())
         {
             auto rejected_renderables = content.list.rejected_renderables();
-            if (!rejected_renderables.empty())
+            if (!drop_synthetic_render && !rejected_renderables.empty())
             {
                 auto current_context = mir::raii::paired_calls(
                     [&]{ content.context.make_current(); },
