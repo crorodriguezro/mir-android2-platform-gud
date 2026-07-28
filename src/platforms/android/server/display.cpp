@@ -216,6 +216,14 @@ mga::Display::Display(
 {
     //Some drivers (depending on kernel state) incorrectly report an error code indicating that the display is already on. Ignore the first failure.
     set_powermode_all_displays(*hwc_config, config, mir_power_mode_on);
+    displays.configure(
+        mga::DisplayName::primary,
+        config.primary().power_mode,
+        mg::transformation(config.primary().orientation),
+        config.primary().extents());
+    mir::log_info(
+        "xdisp initial buffer state: output=primary config_power=%d buffer_power=%d",
+        config.primary().power_mode, config.primary().power_mode);
 
     if (config.external().connected)
     {
@@ -229,6 +237,14 @@ mga::Display::Display(
                 gl_context,
                 native_window_report,
                 overlay_option));
+        displays.configure(
+            mga::DisplayName::external,
+            config.external().power_mode,
+            mg::transformation(config.external().orientation),
+            config.external().extents());
+        mir::log_info(
+            "xdisp initial buffer state: output=external config_power=%d buffer_power=%d",
+            config.external().power_mode, config.external().power_mode);
     }
 
     display_report->report_successful_setup_of_native_resources();

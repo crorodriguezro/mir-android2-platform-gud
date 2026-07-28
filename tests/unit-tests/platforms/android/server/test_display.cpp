@@ -963,6 +963,75 @@ TEST_F(Display, preserves_external_only_power_policy_through_configuration)
     EXPECT_THAT(compositor_targets, Eq(1));
 }
 
+TEST_F(Display, starts_with_only_the_synthetic_external_compositor_target)
+{
+    using namespace testing;
+    stub_db_factory->with_next_config([&](mtd::MockHwcConfiguration& mock_config)
+    {
+        ON_CALL(mock_config, active_config_for(mga::DisplayName::external))
+            .WillByDefault(Return(mtd::StubDisplayConfigurationOutput{
+                external_output_id, {20,20}, {4,4}, mir_pixel_format_abgr_8888, 50.0f, true}));
+        EXPECT_CALL(mock_config, power_mode(mga::DisplayName::primary, _)).Times(AnyNumber());
+        EXPECT_CALL(mock_config, power_mode(mga::DisplayName::external, _)).Times(AnyNumber());
+    });
+
+    mga::Display display(
+        stub_db_factory,
+        stub_gl_program_factory,
+        stub_gl_config,
+        null_display_report,
+        null_anw_report,
+        mga::OverlayOptimization::enabled);
+
+    int compositor_targets{0};
+    mg::DisplayBuffer* only_target{nullptr};
+    display.for_each_display_sync_group([&](mg::DisplaySyncGroup& group)
+    {
+        group.for_each_display_buffer([&](mg::DisplayBuffer& buffer)
+        {
+            ++compositor_targets;
+            only_target = &buffer;
+        });
+    });
+
+    EXPECT_THAT(compositor_targets, Eq(1));
+    ASSERT_THAT(only_target, Ne(nullptr));
+}
+
+TEST_F(Display, starts_normal_primary_display_as_a_compositor_target)
+{
+    using namespace testing;
+    stub_db_factory->with_next_config([&](mtd::MockHwcConfiguration& mock_config)
+    {
+        ON_CALL(mock_config, active_config_for(mga::DisplayName::external))
+            .WillByDefault(Return(mtd::StubDisplayConfigurationOutput{
+                external_output_id, {20,20}, {4,4}, mir_pixel_format_abgr_8888, 50.0f, false}));
+        EXPECT_CALL(mock_config, power_mode(mga::DisplayName::primary, _)).Times(AnyNumber());
+    });
+
+    mga::Display display(
+        stub_db_factory,
+        stub_gl_program_factory,
+        stub_gl_config,
+        null_display_report,
+        null_anw_report,
+        mga::OverlayOptimization::enabled);
+
+    int compositor_targets{0};
+    mg::DisplayBuffer* only_target{nullptr};
+    display.for_each_display_sync_group([&](mg::DisplaySyncGroup& group)
+    {
+        group.for_each_display_buffer([&](mg::DisplayBuffer& buffer)
+        {
+            ++compositor_targets;
+            only_target = &buffer;
+        });
+    });
+
+    EXPECT_THAT(compositor_targets, Eq(1));
+    ASSERT_THAT(only_target, Ne(nullptr));
+}
+
 TEST_F(Display, leaves_primary_power_requested_by_used_primary_configuration_unchanged)
 {
     using namespace testing;
