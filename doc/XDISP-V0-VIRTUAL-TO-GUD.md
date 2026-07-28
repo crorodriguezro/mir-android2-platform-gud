@@ -257,6 +257,14 @@ a fresh `MirDisplayConfig` both before and after
 `mir_screencast_create_sync()`, so the post-creation topology is not a stale
 configuration snapshot.
 
+This result applies to the Lomiri **session** server used by V0.2. It was not
+an Aethercast-equivalent request: Aethercast uses the host
+`/run/mir_socket`, its fixed client identity, vertical mirror, two buffers,
+and a retained extend-producer lifetime. The follow-up audit in
+`XDISP-E0-AETHERCAST-EXTEND-AUDIT.md` reproduces that path and activates the
+system server's virtual output. Do not use V0.2's disconnected session `virt`
+observation to infer that the Aethercast lifecycle is unavailable.
+
 The normal-primary baseline requested `(0,0,1080,2280)`. It delivered live,
 changing CPU-mapped frames, but output 3 (`virt`) remained
 `connected=0 used=0 top_left=(0,0)` in both fresh topology snapshots.

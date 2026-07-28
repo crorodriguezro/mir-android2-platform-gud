@@ -548,6 +548,24 @@ MirRectangle first_enabled_output(MirDisplayConfig const& config)
     throw std::runtime_error{"no enabled physical output is available for the screencast source"};
 }
 
+MirRectangle aethercast_extend_region(MirDisplayConfig const& config)
+{
+    auto const count = mir_display_config_get_num_outputs(&config);
+    for (int i = 0; i != count; ++i)
+    {
+        auto const* output = mir_display_config_get_output(&config, i);
+        if (mir_output_get_connection_state(output) != mir_output_connection_state_connected || !mir_output_is_enabled(output))
+            continue;
+        auto const modes = mir_output_get_num_modes(output);
+        if (mir_output_get_current_mode_index(output) >= static_cast<size_t>(modes))
+            continue;
+
+        auto const* mode = mir_output_get_current_mode(output);
+        return {mir_output_mode_get_width(mode), 0, 0, 0};
+    }
+    throw std::runtime_error{"Aethercast extend mode requires an enabled physical output"};
+}
+
 void log_topology(char const* phase, MirDisplayConfig const& config)
 {
     auto const count = mir_display_config_get_num_outputs(&config);
@@ -597,8 +615,9 @@ MirGraphicsRegion graphics_region(MirBufferStream* stream)
 class DirectCapture
 {
 public:
-    explicit DirectCapture(MirBufferStream* stream) : stream{stream}, region{graphics_region(stream)}
+    explicit DirectCapture(MirBufferStream* stream) : stream{stream}
     {
+        auto const region = graphics_region(stream);
         if (region.width <= 0 || region.height <= 0 || region.stride <= 0)
             throw std::runtime_error{"invalid CPU screencast graphics region"};
         std::cerr << "mirgud: virtual frame source is CPU mapped " << region.width << "x" << region.height <<
@@ -607,6 +626,9 @@ public:
 
     Frame next()
     {
+        auto const region = graphics_region(stream);
+        if (region.width <= 0 || region.height <= 0 || region.stride <= 0)
+            throw std::runtime_error{"invalid CPU screencast graphics region"};
         Frame frame{static_cast<uint32_t>(region.width), static_cast<uint32_t>(region.height),
             std::vector<uint16_t>(static_cast<std::size_t>(region.width) * region.height)};
         auto const* row = reinterpret_cast<uint8_t const*>(region.vaddr) +
@@ -633,7 +655,6 @@ public:
 
 private:
     MirBufferStream* stream;
-    MirGraphicsRegion region;
 };
 
 class EglCapture
@@ -735,18 +756,24 @@ try
     uint32_t capture_interval{1};
     pid_t monitor_pid{};
     std::string socket;
+    std::string source_mode{"primary"};
     bool pattern{};
     bool no_gud{};
+    bool extend_hold{};
     std::vector<int> capture_region;
     po::options_description options{"Usage"};
     options.add_options()
         ("help,h", "show this help")
         ("mir-socket-file,m", po::value<std::string>(&socket), "Mir server socket")
+        ("source-mode", po::value<std::string>(&source_mode),
+            "source selection: primary (default) or extend (Aethercast-compatible)")
         ("size,s", po::value<std::vector<uint32_t>>()->multitoken(), "GUD/screencast size (default 1280 720)")
         ("cap-interval", po::value<uint32_t>(&capture_interval), "capture every N display intervals")
         ("monitor-pid", po::value<pid_t>(&monitor_pid), "sample this compositor PID's fd/sync_file counts")
         ("pattern", po::bool_switch(&pattern), "Stage A: send the static RGB565 checkerboard, without Mir")
         ("no-gud", po::bool_switch(&no_gud), "source-only stop-condition probe: copy/release frames without opening GUD")
+        ("extend-hold", po::bool_switch(&extend_hold),
+            "hold an Aethercast-compatible extend screencast without reading frames")
         ("capture-region", po::value<std::vector<int>>(&capture_region)->multitoken(),
             "experimental Mir screencast rectangle: X Y WIDTH HEIGHT");
     po::variables_map variables;
@@ -769,6 +796,14 @@ try
     }
     if (!capture_region.empty() && (capture_region.size() != 4 || capture_region[2] <= 0 || capture_region[3] <= 0))
         throw std::runtime_error{"capture-region requires X Y WIDTH HEIGHT, with positive WIDTH and HEIGHT"};
+    if (source_mode != "primary" && source_mode != "extend")
+        throw std::runtime_error{"source-mode must be primary or extend"};
+    if (source_mode == "extend" && socket.empty())
+        throw std::runtime_error{"Aethercast-compatible extend mode requires --mir-socket-file /run/mir_socket"};
+    if (source_mode == "extend" && !capture_region.empty())
+        throw std::runtime_error{"Aethercast-compatible extend mode calculates its own capture region; do not pass --capture-region"};
+    if (extend_hold && (source_mode != "extend" || !no_gud))
+        throw std::runtime_error{"--extend-hold requires --source-mode extend and --no-gud"};
     running = true;
     signal(SIGINT, stop);
     signal(SIGTERM, stop);
@@ -805,7 +840,8 @@ try
         return EXIT_SUCCESS;
     }
 
-    auto const connection = mir::raii::deleter_for(mir_connect_sync(socket.empty() ? nullptr : socket.c_str(), "mirgud"),
+    auto const connection = mir::raii::deleter_for(mir_connect_sync(socket.empty() ? nullptr : socket.c_str(),
+        source_mode == "extend" ? "aethercast screencast client" : "mirgud"),
         [](MirConnection* value) { if (value) mir_connection_release(value); });
     if (!connection || !mir_connection_is_valid(connection.get()))
         throw std::runtime_error{"cannot connect to Mir for virtual/screencast capture"};
@@ -814,11 +850,20 @@ try
     if (!display_configuration)
         throw std::runtime_error{"cannot obtain Mir display configuration"};
     log_topology("before-screencast", *display_configuration);
-    auto const region = capture_region.empty() ? first_enabled_output(*display_configuration) :
+    auto region = capture_region.empty() ? first_enabled_output(*display_configuration) :
         MirRectangle{capture_region[0], capture_region[1],
             static_cast<unsigned int>(capture_region[2]), static_cast<unsigned int>(capture_region[3])};
-    std::cerr << "mirgud: xdisp capture region requested=(" << region.left << "," << region.top << "," <<
-        region.width << "," << region.height << ")" << std::endl;
+    if (source_mode == "extend")
+    {
+        region = aethercast_extend_region(*display_configuration);
+        region.width = width;
+        region.height = height;
+        std::cerr << "mirgud: xdisp extend request size=" << width << "x" << height <<
+            " mode=extend socket=" << socket << std::endl;
+    }
+    std::cerr << "mirgud: xdisp " << (source_mode == "extend" ? "extend" : "capture") <<
+        " region requested=(" << region.left << "," << region.top << "," << region.width << "," <<
+        region.height << ")" << std::endl;
     MirPixelFormat format{};
     unsigned int formats{};
     mir_connection_get_available_surface_formats(connection.get(), &format, 1, &formats);
@@ -829,6 +874,11 @@ try
     mir_screencast_spec_set_height(spec, height);
     mir_screencast_spec_set_pixel_format(spec, format);
     mir_screencast_spec_set_capture_region(spec, &region);
+    if (source_mode == "extend")
+    {
+        mir_screencast_spec_set_mirror_mode(spec, mir_mirror_mode_vertical);
+        mir_screencast_spec_set_number_of_buffers(spec, 2);
+    }
     auto const screencast = mir::raii::deleter_for(mir_screencast_create_sync(spec),
         [](MirScreencast* value) { if (value) mir_screencast_release_sync(value); });
     mir_screencast_spec_release(spec);
@@ -843,6 +893,23 @@ try
         throw std::runtime_error{"Mir screencast has no buffer stream"};
     std::cerr << "mirgud: Stage B virtual/screencast source enabled " << width << "x" << height <<
         " requested_format=" << static_cast<int>(format) << std::endl;
+
+    if (extend_hold)
+    {
+        std::cerr << "mirgud: xdisp extend hold active; preserving the Aethercast-compatible screencast lifetime"
+            << std::endl;
+        auto next_report = std::chrono::steady_clock::now();
+        while (running)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds{100});
+            if (std::chrono::steady_clock::now() >= next_report)
+            {
+                report(presenter.stats(), monitor_pid);
+                next_report += std::chrono::seconds{1};
+            }
+        }
+        return EXIT_SUCCESS;
+    }
 
     auto next_report = std::chrono::steady_clock::now();
     std::unique_ptr<DirectCapture> direct;

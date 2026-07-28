@@ -40,7 +40,7 @@ docker run --rm \
     --volume "$build_dir:/build" \
     --workdir /src \
     "$image_tag" \
-    cmake --build /build --target wrapper mirplatformgraphicsandroid mir_unit_tests_android2 --parallel "$build_jobs"
+    cmake --build /build --target wrapper mirplatformgraphicsandroid mirgud mir_unit_tests_android2 --parallel "$build_jobs"
 
 docker run --rm \
     --network none \
