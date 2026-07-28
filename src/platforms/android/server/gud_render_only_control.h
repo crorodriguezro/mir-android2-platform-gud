@@ -12,6 +12,12 @@ inline bool should_start_gud_presentation_worker()
 {
     return false;
 }
+
+/* A dropped render-only frame has no consumer that needs GPU completion. */
+inline bool should_finish_gud_offscreen_frame()
+{
+    return should_start_gud_presentation_worker();
+}
 }
 }
 }
