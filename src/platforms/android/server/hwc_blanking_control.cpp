@@ -19,6 +19,7 @@
 #include "hwc_configuration.h"
 #include "hwc_wrapper.h"
 #include "gud_output.h"
+#include "gud_synthetic_output_control.h"
 #include "mir/raii.h"
 #include "android_format_conversion-inl.h"
 #include "mir/geometry/length.h"
@@ -99,7 +100,7 @@ mga::HwcBlankingControl::HwcBlankingControl(
     off{false},
     format(determine_hwc_fb_format()),
     gud_mode{GudOutput::startup_mode()},
-    gud_external{gud_mode.valid()}
+    gud_external{gud_mode.valid() && mga::should_expose_synthetic_gud_output()}
 {}
 
 mga::HwcBlankingControl::HwcBlankingControl(
@@ -109,7 +110,7 @@ mga::HwcBlankingControl::HwcBlankingControl(
     off{false},
     format{format},
     gud_mode{GudOutput::startup_mode()},
-    gud_external{gud_mode.valid()}
+    gud_external{gud_mode.valid() && mga::should_expose_synthetic_gud_output()}
 {}
 
 void mga::HwcBlankingControl::power_mode(DisplayName display_name, MirPowerMode mode_request)
@@ -292,7 +293,7 @@ mga::HwcPowerModeControl::HwcPowerModeControl(
     hwc_device{hwc_device},
     format(determine_hwc_fb_format()),
     gud_mode{GudOutput::startup_mode()},
-    gud_external{gud_mode.valid()}
+    gud_external{gud_mode.valid() && mga::should_expose_synthetic_gud_output()}
 {}
 
 void mga::HwcPowerModeControl::power_mode(DisplayName display_name, MirPowerMode mode_request)

@@ -3,6 +3,7 @@
 #include "src/platforms/android/server/gud_mode_selection.h"
 #include "src/platforms/android/server/gud_render_only_control.h"
 #include "src/platforms/android/server/gud_offscreen_target.h"
+#include "src/platforms/android/server/gud_synthetic_output_control.h"
 
 #include <gtest/gtest.h>
 
@@ -46,6 +47,11 @@ TEST(GudOffscreenTarget, replaces_only_the_synthetic_external_window_surface)
     EXPECT_FALSE(mga::should_use_gud_offscreen_target(true, mga::DisplayName::primary));
     EXPECT_TRUE(mga::should_use_gud_offscreen_target(true, mga::DisplayName::external));
     EXPECT_FALSE(mga::should_use_gud_offscreen_target(true, mga::DisplayName::virt));
+}
+
+TEST(GudSyntheticOutputControl, can_disable_second_output_without_disabling_discovery)
+{
+    EXPECT_FALSE(mga::should_expose_synthetic_gud_output());
 }
 
 TEST(GudOffscreenTarget, render_only_lifecycle_has_no_android_framebuffer)
