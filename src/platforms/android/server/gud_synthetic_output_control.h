@@ -20,7 +20,7 @@ inline bool should_bypass_synthetic_hwc_bookkeeping()
 
 inline bool should_offer_synthetic_output_to_compositor()
 {
-    return false;
+    return true;
 }
 
 inline bool should_mark_synthetic_output_used()

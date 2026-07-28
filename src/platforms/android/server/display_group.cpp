@@ -23,6 +23,9 @@
 #include <boost/throw_exception.hpp>
 #include <stdexcept>
 
+#define MIR_LOG_COMPONENT "android-display-group"
+#include <mir/log.h>
+
 namespace mg = mir::graphics;
 namespace mga = mir::graphics::android;
 namespace geom = mir::geometry;
@@ -47,13 +50,36 @@ mga::DisplayGroup::DisplayGroup(
 void mga::DisplayGroup::for_each_display_buffer(std::function<void(mg::DisplayBuffer&)> const& f)
 {
     std::unique_lock<decltype(guard)> lk(guard);
+    int primary_targets{0};
+    int external_targets{0};
+    int total_targets{0};
+
     for(auto const& db : dbs)
     {
         if (db.first == mga::DisplayName::external &&
             !mga::should_offer_synthetic_output_to_compositor())
             continue;
         if (db.second->power_mode() != mir_power_mode_off)
+        {
+            ++total_targets;
+            if (db.first == mga::DisplayName::primary)
+                ++primary_targets;
+            else if (db.first == mga::DisplayName::external)
+                ++external_targets;
             f(*db.second);
+        }
+    }
+
+    if (primary_targets != last_compositor_target_primary ||
+        external_targets != last_compositor_target_external ||
+        total_targets != last_compositor_target_total)
+    {
+        mir::log_info(
+            "xdisp compositor targets: primary=%d external=%d total=%d",
+            primary_targets, external_targets, total_targets);
+        last_compositor_target_primary = primary_targets;
+        last_compositor_target_external = external_targets;
+        last_compositor_target_total = total_targets;
     }
 }
 

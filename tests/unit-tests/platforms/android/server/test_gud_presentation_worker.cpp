@@ -53,7 +53,7 @@ TEST(GudSyntheticOutputControl, selects_the_external_output_while_bypassing_hwc_
 {
     EXPECT_TRUE(mga::should_expose_synthetic_gud_output());
     EXPECT_TRUE(mga::should_bypass_synthetic_hwc_bookkeeping());
-    EXPECT_FALSE(mga::should_offer_synthetic_output_to_compositor());
+    EXPECT_TRUE(mga::should_offer_synthetic_output_to_compositor());
     EXPECT_FALSE(mga::should_mark_primary_output_used());
     EXPECT_TRUE(mga::should_mark_synthetic_output_used());
 }

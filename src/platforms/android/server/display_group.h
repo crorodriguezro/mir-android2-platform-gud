@@ -62,6 +62,9 @@ private:
     std::shared_ptr<DisplayDevice> const device;
     std::map<DisplayName, std::unique_ptr<ConfigurableDisplayBuffer>> dbs;
     ExceptionHandler const exception_handler;
+    int last_compositor_target_primary{-1};
+    int last_compositor_target_external{-1};
+    int last_compositor_target_total{-1};
 };
 
 }
