@@ -204,3 +204,40 @@ The completed-frame source is usable and resource-bounded over the observed
 interval, but the existing GUD transport failed before any live Mir pixels
 could reach the Pi HDMI monitor. Do not pursue Stage B or performance work
 until the `-110` Stage A transport failure and Pi reachability are resolved.
+
+## 2026-07-28 hardware result — V0.2 virtual-region feasibility
+
+V0.2 used the standalone `mirgud` client with `--no-gud`; neither the GUD
+kernel driver nor the Pi gadget participated in these tests. The client takes
+a fresh `MirDisplayConfig` both before and after
+`mir_screencast_create_sync()`, so the post-creation topology is not a stale
+configuration snapshot.
+
+The normal-primary baseline requested `(0,0,1080,2280)`. It delivered live,
+changing CPU-mapped frames, but output 3 (`virt`) remained
+`connected=0 used=0 top_left=(0,0)` in both fresh topology snapshots.
+
+Two off-primary probes then requested `(1080,0,1280,720)` and
+`(1081,0,1280,720)`, respectively. Both produced CPU-mapped `1280x720`
+frames, but output 3 still remained disconnected and unused in the fresh
+post-screencast configuration. Their sampled fingerprint was constant after
+the first frame (`0xdce53c1df8560f83` through at least frame 360), consistent
+with an empty/static off-primary region rather than independent desktop
+content. Frame ownership remained bounded (`self_fds=14`) and there were no
+conversion failures.
+
+Upstream Mir 1.8.3's `CompositingScreencast` creates and enables a virtual
+output when the capture region has no intersection with the connected-output
+bounding rectangle. The UBports Mir packaging patch series contains no patch
+to that screencast path. The active phone runtime nevertheless did not expose
+an enabled virtual output for either completely off-primary request. A
+separately rebuilt Android platform module with V0.2 lifecycle tracing entered
+a LightDM compositor restart loop, so it was immediately unmounted and the
+known-good platform restored; no topology conclusion depends on that failed
+deployment.
+
+**Classification: V0.2-E — PLATFORM CANNOT REPRESENT THE TOPOLOGY.** The
+active Android platform/runtime does not expose a connected, non-overlapping
+virtual output through the existing screencast request. The off-primary
+capture is static/empty, so it is not an independent Lomiri desktop. Do not
+proceed to GUD presentation, window placement, or pointer-crossing tests.
