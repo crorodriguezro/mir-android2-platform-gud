@@ -654,15 +654,14 @@ public:
             throw std::runtime_error{"invalid CPU screencast graphics region"};
         Frame frame{static_cast<uint32_t>(region.width), static_cast<uint32_t>(region.height),
             std::vector<uint16_t>(static_cast<std::size_t>(region.width) * region.height)};
-        auto const* row = reinterpret_cast<uint8_t const*>(region.vaddr) +
-            static_cast<std::size_t>(region.height - 1) * region.stride;
+        auto const* row = reinterpret_cast<uint8_t const*>(region.vaddr);
         try
         {
             for (int y = 0; y != region.height; ++y)
             {
                 mirgud::convert_row_to_rgb565(region.pixel_format, row,
                     frame.pixels.data() + static_cast<std::size_t>(y) * region.width, region.width);
-                row -= region.stride; // Mir's screencast region is bottom-up.
+                row += region.stride; // This Mir CPU screencast region is top-down.
             }
             /* The vector is now independent; this immediately releases the Mir buffer. */
             mir_buffer_stream_swap_buffers_sync(stream);
