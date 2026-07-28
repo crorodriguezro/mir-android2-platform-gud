@@ -293,10 +293,15 @@ connector, or advertised `1280x720` GUD mode is present. The host's USB
 probe likewise found no `1d50:614d` device. Therefore neither the static
 Raw-GUD checkerboard nor the E1 source-to-presenter command was run.
 
-The Pi preflight has deliberately not been attempted: its configured SSH
-login uses an askpass credential, and the task requires separate explicit
-authorization before that credential may be used. Once the Pi is authorized
-and the phone's GUD device enumerates, the intended E1 command is:
+The user has granted standing authorization to use the existing Pi SSH
+credentials for this work; no further credential-authorization prompt is
+required. The Pi preflight is currently operationally blocked instead: the
+temporary `/tmp/gud-ssh-askpass` helper is absent and the Pi was unreachable
+at `192.168.1.110` when Phase 2 resumed. The phone at `192.168.1.120` was
+also unreachable at that time, so its newly reported GUD enumeration could
+not yet be independently recorded. Once both hosts are reachable and the
+credential helper is restored through the established local mechanism, the
+intended E1 command is:
 
 ```bash
 env MIR_CLIENT_PLATFORM_PATH=/usr/lib/aarch64-linux-gnu/mir1/client-platform \
