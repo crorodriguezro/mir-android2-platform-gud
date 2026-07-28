@@ -2,9 +2,11 @@
 
 ## Status
 
-**V0-B — VIRTUAL SOURCE STABLE, GUD PRESENTATION FAILED.** The source-only
-hardware evidence is recorded below; no HDMI visibility claim is made because
-Stage A GUD presentation timed out before a checkerboard could be confirmed.
+**V0-A — MIR SCREENCAST TO GUD TO HDMI WORKS IN MIRROR/CAPTURE MODE.** Static
+GUD presentation was recovered and live Mir/Lomiri application pixels reached
+the Pi HDMI monitor from a Lomiri-authorized Terminal session. This is a
+working scaled mirror/capture path, not an independent or extended desktop.
+The earlier V0-B timeout is retained below as dated historical evidence.
 
 `mirgud` is a standalone client POC. It deliberately does not alter, enable,
 or consume the retired synthetic Android DisplayPort output. The normal Android
@@ -12,13 +14,12 @@ primary remains the active phone panel while Mir services the screencast.
 
 ## Source audit and ownership
 
-The Android graphics platform implements `Display::create_virtual_output()` in
-`src/platforms/android/server/display.cpp`. The caller is Mir server's
-screencast/virtual-output machinery (outside this platform module): it owns the
-returned `graphics::VirtualOutput`, calls `enable()`, and holds it until the
-session ends. `VirtualOutput::enable()` sets the platform's `virt` display
-configuration to connected, used, powered on, and the requested size, then
-causes `Display::on_hotplug()`.
+The Android graphics platform provides `Display::create_virtual_output()` in
+`src/platforms/android/server/display.cpp`. Upstream Mir screencast
+implementations may use that facility under certain capture conditions. The
+active phone runtime did not expose an enabled `virt` output during the tested
+screencast sessions, so this runbook does not treat invocation of
+`create_virtual_output()` or `VirtualOutput::enable()` as hardware-proven.
 
 The raw consumer hook is the existing client screencast API, not an Android
 `DisplayBuffer` borrowed from the compositor:
@@ -167,9 +168,8 @@ POC and preserve that evidence if either count rises monotonically.
 
 Record the executable SHA-256, exact command, selected GUD mode, actual visual
 content, approximate FPS, Pi acknowledgement/journal, and all samples under a
-new ignored evidence directory. Classify the completed run exactly as V0-A,
-V0-B, V0-C, or V0-D from the V0 brief; until this is executed the only honest
-classification is **pending**.
+new ignored evidence directory. The procedure above was completed during V0.1;
+the resulting V0-A success is recorded below.
 
 ## 2026-07-28 hardware result — V0-B
 
@@ -202,8 +202,52 @@ FD delta for follow-up.
 **Classification: V0-B — VIRTUAL SOURCE STABLE, GUD PRESENTATION FAILED.**
 The completed-frame source is usable and resource-bounded over the observed
 interval, but the existing GUD transport failed before any live Mir pixels
-could reach the Pi HDMI monitor. Do not pursue Stage B or performance work
-until the `-110` Stage A transport failure and Pi reachability are resolved.
+could reach the Pi HDMI monitor. At that point Stage B and performance work
+were deferred pending recovery of the `-110` Stage A transport failure and Pi
+reachability; the later V0.1 result records that recovery.
+
+## 2026-07-28 hardware result — V0.1 transport recovery and V0-A success
+
+The earlier V0-B transport result was recovered without changing the validated
+Mir screencast ownership or RGB565 conversion path. The Pi enumerated as
+`1d50:614d`, the phone registered the GUD card as `/dev/dri/card1`, and the
+static RGB565 checkerboard ran successfully through the Pi HDMI output.
+
+During the successful static run there was no host `-110`, no submission
+failure, and no observed kernel fault. The Pi remained reachable, its UDC
+remained configured, and FunctionFS completed exact bulk reads through at
+least payload sequence 71 without a short read or receiver error.
+
+Stage B must be launched from a Lomiri-authorized Terminal/application session;
+a direct SSH process is rejected by Mir session authorization. When launched
+from that authorized session, live Terminal/application pixels were visible on
+the external HDMI monitor.
+
+This verifies the complete mirror/capture path:
+
+```text
+Lomiri / Mir
+    ↓
+Mir screencast
+    ↓
+CPU-mapped frame
+    ↓
+RGB565 conversion
+    ↓
+bounded latest-frame presenter
+    ↓
+GUD DRM
+    ↓
+USB
+    ↓
+Pi FunctionFS
+    ↓
+HDMI
+```
+
+**Classification: V0-A — SUCCESS.** This is a live application mirror/capture
+result only. It does not establish full Lomiri shell composition capture or an
+independent desktop.
 
 ## 2026-07-28 hardware result — V0.2 virtual-region feasibility
 
@@ -236,8 +280,45 @@ a LightDM compositor restart loop, so it was immediately unmounted and the
 known-good platform restored; no topology conclusion depends on that failed
 deployment.
 
-**Classification: V0.2-E — PLATFORM CANNOT REPRESENT THE TOPOLOGY.** The
-active Android platform/runtime does not expose a connected, non-overlapping
-virtual output through the existing screencast request. The off-primary
-capture is static/empty, so it is not an independent Lomiri desktop. Do not
-proceed to GUD presentation, window placement, or pointer-crossing tests.
+**Classification: V0.2-C — CURRENT SCREENCAST PATH DOES NOT PROVIDE AN
+INDEPENDENT DESKTOP.** The current phone runtime captures the populated
+primary scene but does not expose output 3 (`virt`) as connected/used during
+the tested screencast sessions. Completely off-primary requests return
+static/empty content, not independently rendered Lomiri content. Therefore the
+working screencast mechanism cannot be trivially converted into an extended
+desktop by relocating or capturing `virt`.
+
+The exact server-side reason that the platform virtual-output lifecycle was not
+observed is unresolved and intentionally deferred. This does not prove that
+the Android display platform could never represent such a topology through a
+different Mir/Lomiri integration path. Do not proceed to GUD presentation,
+window placement, or pointer-crossing tests for V0.2.
+
+## Architectural decision and next direction
+
+**Independent desktop is deferred. Mirror/capture is the selected path for the
+next development phase.** It already works end-to-end on hardware; the
+screencast source is stable and resource-bounded; GUD transport works; and the
+V0.2 off-primary probes do not expose independent content. Deeper Mir/Lomiri
+topology, virtual-output lifecycle, window-placement, and pointer-crossing work
+may be revisited later, but does not block the external-display milestone.
+
+```text
+Mir capture source
+       ↓
+ frame producer
+   /           \
+  ↓             ↓
+RawGudBackend  H264UsbBackend (future)
+```
+
+The current Raw GUD path is:
+
+```text
+Mir screencast → CPU map/copy → RGB565 → GUD → USB
+```
+
+A future optimized path may instead retain a Mir-native or gralloc-capable
+frame for Qualcomm hardware H.264 encoding, USB transport, Pi decoding, and
+HDMI. H.264 is future work only: it was not implemented or tested by V0,
+V0.1, or V0.2.
