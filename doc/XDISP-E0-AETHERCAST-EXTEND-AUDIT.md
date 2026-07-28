@@ -187,10 +187,19 @@ The first settled shell dump was
 `cfab273a23f87b34b300641753a14d4d62a92d77fccd6d6ab5d701c50244ad02`).
 It is an upright `1280x720` landscape Lomiri external shell with a panel,
 left launcher, landscape background, and status/lock area. The initial CPU
-copy was vertically inverted; this exposed that this phone's CPU
-`MirGraphicsRegion` is top-down. `b1084cb` corrected only the owned RGB565
-row order. The settled frame thereafter is upright; no scaling or topology
-change was introduced.
+copy was vertically inverted. For this phone's tested Aethercast-compatible
+extend source, the CPU `MirGraphicsRegion` must be copied top-down to produce
+an upright frame. `0618735dba9817ce48cdd7c5ac1abf1c2efff044` corrected the
+owned RGB565 row order; the settled frame thereafter is upright, with no
+scaling or topology change.
+
+This is specifically E0.1 extend-path evidence. The historical/default CPU
+screencast path is treated as bottom-up by the existing Mir screencast
+reference implementation, and the primary capture path retains that row order.
+The extend source also requests `mir_mirror_mode_vertical`; that is a strong
+architectural correlation with the observed top-down order, not proof that it
+is the cause. E0.1 does not establish that every `MirGraphicsRegion` is
+universally top-down or universally bottom-up.
 
 The application-content frame used for the gate was
 `/home/phablet/xdisp-e01-unlocked-morph.ppm` (local copy

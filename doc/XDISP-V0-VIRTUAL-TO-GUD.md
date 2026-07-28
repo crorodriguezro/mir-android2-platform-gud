@@ -35,8 +35,12 @@ Mir screencast session -> MirBufferStream -> MirGraphicsRegion / EGL surface
 
 `src/utils/screencast.cpp` is the pre-existing reference implementation. It
 uses `mir_buffer_stream_get_graphics_region()` when the stream is CPU mapped;
-the returned `MirGraphicsRegion` has actual width, height, byte stride, pixel
-format, and a bottom-up virtual address. It releases that current frame through
+the returned `MirGraphicsRegion` has actual width, height, byte stride, and
+pixel format. The historical/default CPU screencast path is treated as
+bottom-up by that reference implementation. E0.1 separately proved that this
+phone's Aethercast-compatible extend source must be copied top-down for an
+upright frame; it requests `mir_mirror_mode_vertical`, though that correlation
+does not prove causation. It releases that current frame through
 `mir_buffer_stream_swap_buffers_sync()`. There is no exported acquire-fence
 object at this client boundary: successful synchronous swap is the completion
 and release operation. If direct mapping is unavailable, the same utility uses
@@ -70,7 +74,9 @@ backpressure.
 - `src/utils/gud_screencast.cpp` adds `mirgud`, the POC executable.
 - `src/utils/gud_screencast_rgb565.h` explicitly converts the delivered
   ABGR/XBGR, ARGB/XRGB, RGB/BGR888, or RGB565 rows to RGB565, respecting byte
-  stride and the source's inverted row order.
+  stride and explicit source-specific row order: primary capture retains the
+  historical bottom-up order, while the E0.1 Aethercast-compatible extend
+  source uses the hardware-validated top-down order.
 - `--pattern` runs Stage A through exactly the same GUD KMS presenter as Stage
   B. Normal operation requests a 1280x720 screencast and performs Stage B.
 - The existing GUD FunctionFS/kernel/Pi path is reused through the phone's GUD
