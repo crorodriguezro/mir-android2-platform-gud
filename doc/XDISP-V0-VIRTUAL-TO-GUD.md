@@ -8,6 +8,11 @@ the Pi HDMI monitor from a Lomiri-authorized Terminal session. This is a
 working scaled mirror/capture path, not an independent or extended desktop.
 The earlier V0-B timeout is retained below as dated historical evidence.
 
+**Current development has moved to the E0 Aethercast-compatible extended-display
+path documented in `XDISP-E0-AETHERCAST-EXTEND-AUDIT.md`.** The V0 mirror path
+remains useful as a fallback and transport diagnostic, but the roadmap at the
+end of this document is historical and is superseded by E0.
+
 `mirgud` is a standalone client POC. It deliberately does not alter, enable,
 or consume the retired synthetic Android DisplayPort output. The normal Android
 primary remains the active phone panel while Mir services the screencast.
@@ -17,9 +22,9 @@ primary remains the active phone panel while Mir services the screencast.
 The Android graphics platform provides `Display::create_virtual_output()` in
 `src/platforms/android/server/display.cpp`. Upstream Mir screencast
 implementations may use that facility under certain capture conditions. The
-active phone runtime did not expose an enabled `virt` output during the tested
-screencast sessions, so this runbook does not treat invocation of
-`create_virtual_output()` or `VirtualOutput::enable()` as hardware-proven.
+V0.2 session-server runtime did not expose an enabled `virt` output during the
+tested screencast sessions; E0 later proved that the Aethercast-compatible
+system-server path does activate that virtual output.
 
 The raw consumer hook is the existing client screencast API, not an Android
 `DisplayBuffer` borrowed from the compositor:
@@ -38,10 +43,13 @@ and release operation. If direct mapping is unavailable, the same utility uses
 an EGL surface and `glReadPixels()`, followed by `eglSwapBuffers()` to release
 the stream buffer.
 
-Thus Aethercast-style consumers can receive consecutive completed frames
-without OMX: the buffer stream is the source; OMX/H.264 is a later consumer
-choice. `mirgud` retains the production path while bypassing OMX completely.
-It uses the enabled primary output as its capture region and requests a
+Thus the Mir buffer stream can provide consecutive completed frames without any
+video encoder. V0 deliberately keeps the source and Raw GUD presentation path
+independent of OMX or compressed-video transport. Any H.264/OMX investigation
+is a post-milestone optimization and is not part of the active extended-display
+work.
+
+V0 uses the enabled primary output as its capture region and requests a
 1280x720 screencast image, so V0 output is a scaled **mirror/capture**, not an
 independent desktop.
 
@@ -281,52 +289,58 @@ conversion failures.
 Upstream Mir 1.8.3's `CompositingScreencast` creates and enables a virtual
 output when the capture region has no intersection with the connected-output
 bounding rectangle. The UBports Mir packaging patch series contains no patch
-to that screencast path. The active phone runtime nevertheless did not expose
-an enabled virtual output for either completely off-primary request. A
+to that screencast path. The active phone session runtime nevertheless did not
+expose an enabled virtual output for either completely off-primary request. A
 separately rebuilt Android platform module with V0.2 lifecycle tracing entered
 a LightDM compositor restart loop, so it was immediately unmounted and the
 known-good platform restored; no topology conclusion depends on that failed
 deployment.
 
-**Classification: V0.2-C — CURRENT SCREENCAST PATH DOES NOT PROVIDE AN
-INDEPENDENT DESKTOP.** The current phone runtime captures the populated
+**Classification: V0.2-C — SESSION-SERVER SCREENCAST PATH DOES NOT PROVIDE AN
+INDEPENDENT DESKTOP.** The tested Lomiri session server captures the populated
 primary scene but does not expose output 3 (`virt`) as connected/used during
-the tested screencast sessions. Completely off-primary requests return
-static/empty content, not independently rendered Lomiri content. Therefore the
-working screencast mechanism cannot be trivially converted into an extended
-desktop by relocating or capturing `virt`.
+those screencast sessions. Completely off-primary requests return static/empty
+content, not independently rendered Lomiri content.
 
-The exact server-side reason that the platform virtual-output lifecycle was not
-observed is unresolved and intentionally deferred. This does not prove that
-the Android display platform could never represent such a topology through a
-different Mir/Lomiri integration path. Do not proceed to GUD presentation,
-window placement, or pointer-crossing tests for V0.2.
+E0 later resolved the apparent contradiction: Aethercast uses the system Mir
+server at `/run/mir_socket`, not the Lomiri session server used by V0.2. The
+Aethercast-compatible E0 request successfully activates a real, non-overlapping
+`Virtual 1280x720+1080+0` output and Lomiri creates a landscape external-screen
+layout for it. See `XDISP-E0-AETHERCAST-EXTEND-AUDIT.md` for the active result.
 
-## Architectural decision and next direction
+## Post-V0.2 architectural decision — superseded by E0
 
-**Independent desktop is deferred. Mirror/capture is the selected path for the
-next development phase.** It already works end-to-end on hardware; the
-screencast source is stable and resource-bounded; GUD transport works; and the
-V0.2 off-primary probes do not expose independent content. Deeper Mir/Lomiri
-topology, virtual-output lifecycle, window-placement, and pointer-crossing work
-may be revisited later, but does not block the external-display milestone.
+The decision made immediately after V0.2 to defer extended-display work and
+continue with scaled primary mirroring is **superseded**.
+
+E0 established that V0.2 had exercised the wrong Mir server for the Aethercast
+virtual-output lifecycle. The active architecture is now:
 
 ```text
-Mir capture source
-       ↓
- frame producer
-   /           \
-  ↓             ↓
-RawGudBackend  H264UsbBackend (future)
+/run/mir_socket
+      ↓
+Aethercast-compatible extend source
+      ↓
+Mir Virtual 1280x720+1080+0
+      ↓
+Lomiri external 1280x720 landscape scene
+      ↓
+completed 1280x720 frames
+      ↓
+RGB565 / Raw GUD presenter
+      ↓
+USB → Pi → HDMI
 ```
 
-The current Raw GUD path is:
+The V0 mirror/capture path remains a useful fallback and transport diagnostic,
+but it is no longer the preferred user-facing architecture. The current phase
+sequence and acceptance gates are maintained in
+`XDISP-E0-AETHERCAST-EXTEND-AUDIT.md`.
 
-```text
-Mir screencast → CPU map/copy → RGB565 → GUD → USB
-```
-
-A future optimized path may instead retain a Mir-native or gralloc-capable
-frame for Qualcomm hardware H.264 encoding, USB transport, Pi decoding, and
-HDMI. H.264 is future work only: it was not implemented or tested by V0,
-V0.1, or V0.2.
+Compressed-video transport, including H.264/OMX, is explicitly **outside the
+active roadmap**. Do not start that work until the proper extended-display UI,
+Raw GUD presentation, application usability, connect/disconnect and reconnect
+lifecycle, monitor-mode behavior, sustained resource stability, and Raw GUD
+quality/performance work are all complete. Only then should a separate
+post-milestone transport-optimization phase evaluate H.264 or other compressed
+transports against the finished Raw GUD baseline.
