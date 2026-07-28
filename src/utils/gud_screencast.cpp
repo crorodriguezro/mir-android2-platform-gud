@@ -638,13 +638,14 @@ MirGraphicsRegion graphics_region(MirBufferStream* stream)
 class DirectCapture
 {
 public:
-    explicit DirectCapture(MirBufferStream* stream) : stream{stream}
+    DirectCapture(MirBufferStream* stream, mirgud::RowOrder row_order) : stream{stream}, row_order{row_order}
     {
         auto const region = graphics_region(stream);
         if (region.width <= 0 || region.height <= 0 || region.stride <= 0)
             throw std::runtime_error{"invalid CPU screencast graphics region"};
         std::cerr << "mirgud: virtual frame source is CPU mapped " << region.width << "x" << region.height <<
-            " format=" << static_cast<int>(region.pixel_format) << " stride=" << region.stride << std::endl;
+            " format=" << static_cast<int>(region.pixel_format) << " stride=" << region.stride <<
+            " row_order=" << (row_order == mirgud::RowOrder::top_down ? "top-down" : "bottom-up") << std::endl;
     }
 
     Frame next()
@@ -654,15 +655,11 @@ public:
             throw std::runtime_error{"invalid CPU screencast graphics region"};
         Frame frame{static_cast<uint32_t>(region.width), static_cast<uint32_t>(region.height),
             std::vector<uint16_t>(static_cast<std::size_t>(region.width) * region.height)};
-        auto const* row = reinterpret_cast<uint8_t const*>(region.vaddr);
         try
         {
-            for (int y = 0; y != region.height; ++y)
-            {
-                mirgud::convert_row_to_rgb565(region.pixel_format, row,
-                    frame.pixels.data() + static_cast<std::size_t>(y) * region.width, region.width);
-                row += region.stride; // This Mir CPU screencast region is top-down.
-            }
+            mirgud::copy_rows_to_rgb565(region.pixel_format,
+                reinterpret_cast<uint8_t const*>(region.vaddr), region.stride,
+                region.width, region.height, row_order, frame.pixels.data());
             /* The vector is now independent; this immediately releases the Mir buffer. */
             mir_buffer_stream_swap_buffers_sync(stream);
             return frame;
@@ -677,6 +674,7 @@ public:
 
 private:
     MirBufferStream* stream;
+    mirgud::RowOrder row_order;
 };
 
 class EglCapture
@@ -957,7 +955,8 @@ try
     std::unique_ptr<DirectCapture> direct;
     try
     {
-        direct = std::make_unique<DirectCapture>(stream);
+        direct = std::make_unique<DirectCapture>(stream,
+            source_mode == "extend" ? mirgud::RowOrder::top_down : mirgud::RowOrder::bottom_up);
     }
     catch (std::exception const& direct_error)
     {

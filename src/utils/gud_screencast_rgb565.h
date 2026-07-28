@@ -11,6 +11,12 @@
 
 namespace mirgud
 {
+enum class RowOrder
+{
+    top_down,
+    bottom_up
+};
+
 inline uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b)
 {
     return static_cast<uint16_t>(((r & 0xf8) << 8) | ((g & 0xfc) << 3) | (b >> 3));
@@ -47,6 +53,23 @@ inline void convert_row_to_rgb565(
             throw std::runtime_error{"unsupported Mir screencast pixel format for RGB565 conversion"};
         }
         destination[x] = rgb565(r, g, b);
+    }
+}
+
+inline void copy_rows_to_rgb565(
+    MirPixelFormat format, uint8_t const* source, std::ptrdiff_t stride,
+    std::size_t width, std::size_t height, RowOrder row_order, uint16_t* destination)
+{
+    if (height == 0)
+        return;
+    auto const* row = source;
+    if (row_order == RowOrder::bottom_up)
+        row += static_cast<std::size_t>(height - 1) * stride;
+
+    for (std::size_t y = 0; y != height; ++y)
+    {
+        convert_row_to_rgb565(format, row, destination + y * width, width);
+        row += row_order == RowOrder::top_down ? stride : -stride;
     }
 }
 
