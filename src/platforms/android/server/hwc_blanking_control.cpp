@@ -242,6 +242,16 @@ mg::DisplayConfigurationOutput display_config_for(
         true);
 }
 
+mg::DisplayConfigurationOutput apply_test_primary_output_policy(
+    mga::DisplayName display_name,
+    mg::DisplayConfigurationOutput config,
+    bool synthetic_gud_external)
+{
+    if (synthetic_gud_external && display_name == mga::DisplayName::primary)
+        config.used = mga::should_mark_primary_output_used();
+    return config;
+}
+
 mga::ConfigChangeSubscription subscribe_to_config_changes(
     std::shared_ptr<mga::HwcWrapper> const& hwc_device,
     void const* subscriber,
@@ -278,7 +288,8 @@ mg::DisplayConfigurationOutput mga::HwcBlankingControl::active_config_for(Displa
             return populate_config(display_name, {0,0}, 0.0f, {0,0}, mir_power_mode_off, mir_pixel_format_invalid, false);
     }
 
-    return display_config_for(display_name, configs.front(), format, hwc_device);
+    return apply_test_primary_output_policy(
+        display_name, display_config_for(display_name, configs.front(), format, hwc_device), gud_external);
 }
 
 mga::ConfigChangeSubscription mga::HwcBlankingControl::subscribe_to_config_changes(
@@ -354,7 +365,8 @@ mg::DisplayConfigurationOutput mga::HwcPowerModeControl::active_config_for(Displ
         hwc_device->set_active_config(display_name, configs.front());
     }
 
-    return display_config_for(display_name, active_config_id, format, hwc_device);
+    return apply_test_primary_output_policy(
+        display_name, display_config_for(display_name, active_config_id, format, hwc_device), gud_external);
 }
 
 mga::ConfigChangeSubscription mga::HwcPowerModeControl::subscribe_to_config_changes(

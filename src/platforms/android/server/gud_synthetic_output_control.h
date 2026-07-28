@@ -25,6 +25,11 @@ inline bool should_offer_synthetic_output_to_compositor()
 
 inline bool should_mark_synthetic_output_used()
 {
+    return true;
+}
+
+inline bool should_mark_primary_output_used()
+{
     return false;
 }
 }

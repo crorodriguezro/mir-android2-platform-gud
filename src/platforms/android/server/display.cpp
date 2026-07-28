@@ -26,6 +26,7 @@
 #include "display.h"
 #include "gud_output.h"
 #include "gud_offscreen_target.h"
+#include "gud_synthetic_output_control.h"
 #include "virtual_output.h"
 #include "display_component_factory.h"
 #include "interpreter_cache.h"
@@ -110,7 +111,9 @@ void set_powermode_all_displays(
     mga::DisplayConfiguration& config,
     MirPowerMode intended_mode) noexcept
 {
-    power_mode_safe(mga::DisplayName::primary, control, config.primary(), intended_mode);
+    auto const primary_mode = mga::should_expose_synthetic_gud_output() && config.external().connected &&
+            !mga::should_mark_primary_output_used() ? mir_power_mode_off : intended_mode;
+    power_mode_safe(mga::DisplayName::primary, control, config.primary(), primary_mode);
     if (config.external().connected)
         power_mode_safe(mga::DisplayName::external, control, config.external(), intended_mode); 
 }
