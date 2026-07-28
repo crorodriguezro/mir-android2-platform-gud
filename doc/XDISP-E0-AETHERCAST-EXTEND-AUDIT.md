@@ -252,3 +252,59 @@ E0.1 therefore proves that the Aethercast-style system-Mir virtual output
 does produce a real, correctly oriented, native `1280x720` Lomiri external
 application scene. E1 may proceed only after the already-established GUD/Pi
 preflight is again healthy.
+
+## Phase 1 revalidation and E1 preflight (2026-07-28)
+
+**Phase 1 passed; E1 has not started.** The scoped row-order implementation
+is commit `702773815e4d0230f424f0ef8b2898837ca58996`, following the original
+extend-only orientation correction
+`0618735dba9817ce48cdd7c5ac1abf1c2efff044`. The matching documentation
+correction is `a30b68f`. A phone-matched container build completed and the
+focused filter
+`GudScreencastRgb565.*:GudPresentationWorker.*:GudHwcBoundary.*` passed all
+10 tests. This includes RGB565 channel conversion plus separate top-down and
+bottom-up, padded-stride row-copy tests.
+
+The fresh payload was deployed without replacing earlier evidence artifacts
+as `/home/phablet/mirgud-e1-7027738.bin` (SHA-256
+`6c7a78bdbf0d161cb7160bb8075286488b293dac0ecbcaa6e7c0df31e83ef5a6`).
+With GUD explicitly disabled, the system-Mir source checks produced these
+new, retained local copies:
+
+| Source mode | Explicit row order | Result |
+| --- | --- | --- |
+| `extend` | top-down | `/tmp/xdisp-e1-phase1-extend.ppm`, SHA-256 `0f2f5fbc3e076bb0405bae28eec7eb38a3d94f1f28b63c2087ec3f57a1ef42a3`: upright `1280x720` landscape external shell, panel and launcher visible. 175 frames in eight seconds, 14 client FDs, zero conversion failures. |
+| `primary` | bottom-up | `/tmp/xdisp-e1-phase1-primary.ppm`, SHA-256 `3f42fe3cb8c8b2e337a3074aebc1ccf909644d488d190e56fbc4b3d528db2869`: readable, non-inverted primary UI. 168 frames in eight seconds, 14 client FDs, zero conversion failures. |
+
+The default greeter-session socket rejected the primary probe with a broken
+pipe before it created a stream, so that probe was repeated against the
+healthy system socket `/run/mir_socket`; it captured the primary `(0,0,
+1080,2280)` region and logged `row_order=bottom-up`. The extend probe used
+the fixed Aethercast-compatible system socket and requested `(1080,0,
+1280,720)`, logging `row_order=top-down`. After both probes, `mirout
+/run/mir_socket` reported `Virtual, disconnected`; no `mirgud` process
+remained and both `lomiri-system-compositor` and `lomiri` were alive.
+
+### GUD preflight state
+
+E1 remains blocked at Phase 2. The phone is reachable, but only MSM
+`/dev/dri/card0` exists; no `gud` module, GUD DRM card, connected GUD
+connector, or advertised `1280x720` GUD mode is present. The host's USB
+probe likewise found no `1d50:614d` device. Therefore neither the static
+Raw-GUD checkerboard nor the E1 source-to-presenter command was run.
+
+The Pi preflight has deliberately not been attempted: its configured SSH
+login uses an askpass credential, and the task requires separate explicit
+authorization before that credential may be used. Once the Pi is authorized
+and the phone's GUD device enumerates, the intended E1 command is:
+
+```bash
+env MIR_CLIENT_PLATFORM_PATH=/usr/lib/aarch64-linux-gnu/mir1/client-platform \
+    MIR_SERVER_PLATFORM_PATH=/usr/lib/aarch64-linux-gnu/mir1/server-platform \
+    /home/phablet/mirgud-e1-7027738.bin \
+    --source-mode extend --mir-socket-file /run/mir_socket --size 1280 720
+```
+
+It must first follow the Phase 2 static-transport gate, then run the full
+visual and 60-second stability matrix. No E1 classification, HDMI visual
+claim, phone-side UX claim, or Raw-GUD presentation result is made here.
