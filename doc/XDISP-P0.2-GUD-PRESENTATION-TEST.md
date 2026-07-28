@@ -342,6 +342,42 @@ such a topology is unsupported. Test D must restore synthetic external
 compositor participation while preserving the existing GUD/HWC/transport
 bypasses.
 
+## 2026-07-27 Test D one-target compositor attempt
+
+Commit `b793099` restored synthetic external compositor participation and
+added change-only target-set logging in `DisplayGroup`. Its compatible
+`graphics-android2.so.16` artifact SHA-256 was
+`e75aaa12061d6f10b8c676209bea91ceea817e41754eb300b487c150e57a2dfc`.
+The focused Android2 test filter passed seven checks: the five presentation
+worker checks, the synthetic HWC-boundary check, and the new DisplayGroup
+control. The latter explicitly configured the primary off and the synthetic
+external on, and logged `primary=0 external=1 total=1`. The module requires
+the phone's versioned `libmir1platform.so.18`, `libmir1common.so.7`, and
+`libmir1core.so.1` sonames.
+
+Following a fresh OnePlus session, the mandatory dynamic host gate found
+`1d50:614d` at `1-1.3`; the Pi service was active and its UDC configured with
+no unsafe/in-flight receive. The unchanged normal `/home/phablet/gud.ko` was
+loaded only to recreate GUD discovery. The packaged baseline was 90 FDs / 6
+sync files with zero binder `-12` and KGSL `-24` errors.
+
+The Test D artifact reported the desired public configuration (LVDS
+connected/unused and DisplayPort connected/used), but its mandatory
+compositor-target instrumentation instead logged
+`xdisp compositor targets: primary=1 external=1 total=2`. Lomiri then failed
+startup repeatedly and LightDM reached its restart limit. This is **D-invalid
+— intended one-target topology was not achieved**: the FD behavior and startup
+failure must not be interpreted as an external-only result. In particular, the
+primary remained offered to the compositor despite its public unused state;
+the diagnostic policy must be corrected before another Test D run.
+
+The test bind mount was removed before recovery. LightDM was reset and
+restarted on the packaged module SHA-256
+`cd0ddc0342d19df63798e9bbcf496e3657b543bd9827d53004b997454f00ae74`; after
+settling, Lomiri returned to 90 FDs / 6 sync files with zero binder/KGSL
+errors. Retained evidence summary:
+`../gud/backport-4.9/env/local/evidence/xdisp-p0.2-test-d-invalid-2026-07-27T2302COT/`.
+
 ## 2026-07-27 synthetic offscreen target gate
 
 Commit `eae00c7` introduced the first synthetic-only pbuffer/FBO render target
