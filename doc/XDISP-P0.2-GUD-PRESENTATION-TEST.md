@@ -330,6 +330,18 @@ is restored, LightDM is active, and the restored compositor is 90 FDs/6 sync
 files with zero binder/KGSL errors. Full raw evidence is retained at
 `../gud/backport-4.9/env/local/evidence/xdisp-p0.2-external-only-2026-07-27T2158COT/`.
 
+Result C correction: the previous external-only test advertised the synthetic
+DisplayPort as connected/used/on while
+`should_offer_synthetic_output_to_compositor()` was still false, so the
+diagnostic gate excluded that `DisplayBuffer`. Because the primary was also
+powered off, `DisplayGroup::for_each_display_buffer()` enumerated no display
+buffers to the compositor. The Lomiri/LightDM failure is real evidence for
+that inconsistent zero-target diagnostic state, but it cannot distinguish
+stable from leaking valid external-only operation and does not establish that
+such a topology is unsupported. Test D must restore synthetic external
+compositor participation while preserving the existing GUD/HWC/transport
+bypasses.
+
 ## 2026-07-27 synthetic offscreen target gate
 
 Commit `eae00c7` introduced the first synthetic-only pbuffer/FBO render target
