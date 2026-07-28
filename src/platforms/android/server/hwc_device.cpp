@@ -34,6 +34,8 @@
 #include <algorithm>
 #include <chrono>
 #include <thread>
+#include <fstream>
+#include <unistd.h>
 
 namespace mg = mir::graphics;
 namespace mga=mir::graphics::android;
@@ -217,16 +219,29 @@ void mga::HwcDevice::commit(std::list<DisplayContents> const& contents)
     if (pacing_last_report.time_since_epoch().count() == 0 ||
         now - pacing_last_report >= std::chrono::seconds{1})
     {
+        auto const commits = pacing_commit_count;
+        auto const primary_swaps = pacing_primary_swap_count;
+        auto const external_swaps = pacing_external_swap_count;
         mir::log_info(
             "XDISP pacing commits=%llu primary_swap=%llu external_swap=%llu synthetic=%d "
             "purely_before_external=%d purely_overlays=%d sleep_ms=%lld render_only=%d worker=%d",
-            static_cast<unsigned long long>(pacing_commit_count),
-            static_cast<unsigned long long>(pacing_primary_swap_count),
-            static_cast<unsigned long long>(pacing_external_swap_count),
+            static_cast<unsigned long long>(commits),
+            static_cast<unsigned long long>(primary_swaps),
+            static_cast<unsigned long long>(external_swaps),
             synthetic_external_present, purely_overlays_before_synthetic_external, purely_overlays,
             static_cast<long long>(recommend_sleep.count()),
             !mga::should_start_gud_presentation_worker(),
             mga::should_start_gud_presentation_worker());
+        std::ofstream pacing_trace{"/tmp/xdisp-p0.2-pacing.log", std::ios::app};
+        pacing_trace << "pid=" << getpid() << " commits=" << commits
+                     << " primary_swap=" << primary_swaps
+                     << " external_swap=" << external_swaps
+                     << " synthetic=" << synthetic_external_present
+                     << " purely_before_external=" << purely_overlays_before_synthetic_external
+                     << " purely_overlays=" << purely_overlays
+                     << " sleep_ms=" << recommend_sleep.count()
+                     << " render_only=" << !mga::should_start_gud_presentation_worker()
+                     << " worker=" << mga::should_start_gud_presentation_worker() << '\n';
         pacing_commit_count = 0;
         pacing_primary_swap_count = 0;
         pacing_external_swap_count = 0;
