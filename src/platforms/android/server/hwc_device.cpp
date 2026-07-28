@@ -27,6 +27,7 @@
 #include "gud_output.h"
 #include "gud_hwc_boundary.h"
 #include "gud_render_only_control.h"
+#include "gud_synthetic_output_control.h"
 #include "mir/raii.h"
 #define MIR_LOG_COMPONENT "android-hwc-device"
 #include <mir/log.h>
@@ -143,6 +144,9 @@ void mga::HwcDevice::commit(std::list<DisplayContents> const& contents)
 
     for (auto& content : contents)
     {
+        if (synthetic_gud_external && content.name == mga::DisplayName::external &&
+            mga::should_bypass_synthetic_hwc_bookkeeping())
+            continue;
         auto const synthetic_external = synthetic_gud_external &&
             content.name == mga::DisplayName::external;
         if (synthetic_external)
@@ -188,7 +192,7 @@ void mga::HwcDevice::commit(std::list<DisplayContents> const& contents)
         }
     }
 
-    if (synthetic_gud_external)
+    if (synthetic_gud_external && !mga::should_bypass_synthetic_hwc_bookkeeping())
         mga::GudOutput::present_external(contents);
 
     hwc_wrapper->set(hwc_contents);

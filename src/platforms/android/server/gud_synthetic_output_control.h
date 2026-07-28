@@ -10,7 +10,12 @@ namespace android
 {
 inline bool should_expose_synthetic_gud_output()
 {
-    return false;
+    return true;
+}
+
+inline bool should_bypass_synthetic_hwc_bookkeeping()
+{
+    return true;
 }
 }
 }
