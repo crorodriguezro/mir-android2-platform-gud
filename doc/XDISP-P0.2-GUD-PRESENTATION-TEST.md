@@ -252,6 +252,50 @@ commands and state are retained at
 `../gud/backport-4.9/env/local/evidence/xdisp-p0.2-reboot-baseline-2026-07-27T1313COT/`.
 P0.2 remains **in progress**.
 
+## 2026-07-27 plain-FBO and output-activation boundary
+
+Commit `9af1768` replaced the synthetic external Android window surface with a
+pbuffer EGL surface and standalone GLES texture/FBO. It allocates no Android
+gralloc framebuffer for the offscreen target and returns no Android framebuffer
+from `last_rendered_buffer()`. Its focused worker, HWC-boundary, render-only,
+and offscreen-target checks passed. On a fresh OnePlus boot, with the worker
+disabled, it nevertheless reached 808 FDs/715 sync files; no binder or KGSL
+error appeared during that bounded run. Thus the plain texture-FBO replacement
+does not solve the render-only retention.
+
+The next controls eliminated progressively more of the platform path. With the
+synthetic output disabled entirely, the compositor remained at 90 FDs/zero
+additional sync files while the primary continued at 60 commits/s. With the
+synthetic output configured and used but all synthetic `HwcDevice` bookkeeping
+and `GudOutput` submission bypassed, it reached 899 FDs/806 sync files. With
+that same output configured/used but omitted from `DisplayGroup` compositor
+buffers, it still reached 702 FDs/609 sync files. These controls establish that
+the leakage is neither the external EGL/FBO producer, the GUD worker/KMS/USB
+path, nor Android HWC bookkeeping; a connected/used second Mir output is
+sufficient.
+
+Commit `f4d8262` added the final discriminator: a test-only configuration that
+keeps the synthetic DisplayPort connected but marks it unused. Its artifact
+SHA-256 was
+`9de11f5b531d4264620516fcc2b5ce6a734941a9db6c2f317b5736fcebeda470`; all ten
+focused tests passed. Following a fresh phone reboot, the mandatory dynamic
+host gate found `1d50:614d` at `1-1.3`; Pi preflight was `active`,
+`configured`, and idle. The unchanged normal `gud.ko` was loaded only for
+discovery. During the bounded run, Mir logged Output 2 as DisplayPort
+disconnected (the public configuration maps unused outputs that way) and the
+compositor remained at 89 FDs/5 sync files, with no new binder/KGSL regression.
+The packaged plugin SHA-256
+`cd0ddc0342d19df63798e9bbcf496e3657b543bd9827d53004b997454f00ae74` was
+immediately restored and LightDM returned active.
+
+This identifies the remaining boundary precisely: activating the second Mir
+output (`used=true`) drives the retention even when it has no offered display
+buffer and performs no synthetic HWC work. Do not re-enable the worker or run
+slow-output acceptance on this architecture. A future implementation must make
+GUD a non-Mir secondary presentation path (or repair the relevant upstream
+multi-output lifecycle) before it can safely activate an external desktop.
+P0.2 remains **in progress**; no payload was sent in these controls.
+
 ## 2026-07-27 synthetic offscreen target gate
 
 Commit `eae00c7` introduced the first synthetic-only pbuffer/FBO render target
