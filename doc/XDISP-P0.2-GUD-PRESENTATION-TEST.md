@@ -378,6 +378,43 @@ settling, Lomiri returned to 90 FDs / 6 sync files with zero binder/KGSL
 errors. Retained evidence summary:
 `../gud/backport-4.9/env/local/evidence/xdisp-p0.2-test-d-invalid-2026-07-27T2302COT/`.
 
+## 2026-07-27 Test D2 configure-path power-policy attempt
+
+Commit `3961ae1` added the narrow external-only effective-power policy to
+`Display::configure_locked()`: when the synthetic output is active and the
+primary is submitted unused, requested primary power is retained for public
+configuration but applied to the platform DisplayBuffer as off. It also added
+change-only `xdisp configure` logging of used, requested power, and effective
+power. The compatible artifact SHA-256 was
+`2a872f332dbcc5604addf34f0b7909695fda7348892e403b3f93cf20cfe330a2`; nine
+focused checks passed, including the configuration-path control that logs
+primary `used=0`, requested on, effective off, external effective on, and a
+single offered external DisplayBuffer.
+
+The fresh-session packaged baseline was 95 FDs / 6 sync files with zero binder
+`-12` and KGSL `-24` errors. The dynamic GUD gate found `1d50:614d` at
+`1-1.3`; the Pi service was active/configured with no receive in flight. The
+unchanged normal GUD module was present only for discovery.
+
+Hardware result: **D2-invalid**. The diagnostic plugin again reported LVDS
+connected/unused and DisplayPort connected/used, but before any `xdisp
+configure` trace appeared, `DisplayGroup` repeatedly logged
+`primary=1 external=1 total=2`. Lomiri then exited with the LightDM broken-pipe
+failure. The required `primary=0 external=1 total=1` topology was therefore
+not achieved, so this crash and the startup FD samples are not interpreted.
+
+Source inspection explains the missing configure trace: `DisplayBuffer` is
+constructed with `power_mode_` initialized to on, while the D2 override runs
+only later in `configure_locked()`. The target enumeration happened before
+that configuration application. This identifies the next discriminator, but
+no further power/buffer changes were made in this test.
+
+The bind mount was removed and LightDM restarted on the packaged module
+`cd0ddc0342d19df63798e9bbcf496e3657b543bd9827d53004b997454f00ae74`.
+Restoration settled at 90 FDs / 6 sync files with zero binder/KGSL errors.
+Evidence summary:
+`../gud/backport-4.9/env/local/evidence/xdisp-p0.2-test-d2-invalid-2026-07-27T2326COT/`.
+
 ## 2026-07-27 synthetic offscreen target gate
 
 Commit `eae00c7` introduced the first synthetic-only pbuffer/FBO render target
