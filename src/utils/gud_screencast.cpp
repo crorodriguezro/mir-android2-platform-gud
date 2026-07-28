@@ -603,6 +603,29 @@ uint64_t sampled_fingerprint(Frame const& frame)
     return hash;
 }
 
+void write_ppm(Frame const& frame, std::string const& path)
+{
+    if (frame.width == 0 || frame.height == 0 ||
+        frame.pixels.size() != static_cast<std::size_t>(frame.width) * frame.height)
+        throw std::runtime_error{"cannot dump an invalid RGB565 frame"};
+
+    std::ofstream output{path, std::ios::binary | std::ios::trunc};
+    if (!output)
+        throw std::runtime_error{"cannot open frame dump " + path};
+    output << "P6\n" << frame.width << " " << frame.height << "\n255\n";
+    for (auto const pixel : frame.pixels)
+    {
+        auto const r = static_cast<char>(((pixel >> 11) & 0x1f) * 255 / 31);
+        auto const g = static_cast<char>(((pixel >> 5) & 0x3f) * 255 / 63);
+        auto const b = static_cast<char>((pixel & 0x1f) * 255 / 31);
+        output.write(&r, 1);
+        output.write(&g, 1);
+        output.write(&b, 1);
+    }
+    if (!output)
+        throw std::runtime_error{"cannot write frame dump " + path};
+}
+
 MirGraphicsRegion graphics_region(MirBufferStream* stream)
 {
     MirGraphicsRegion region{0, 0, 0, mir_pixel_format_invalid, nullptr};
@@ -760,6 +783,8 @@ try
     bool pattern{};
     bool no_gud{};
     bool extend_hold{};
+    std::string dump_frame;
+    uint64_t dump_frame_after{1};
     std::vector<int> capture_region;
     po::options_description options{"Usage"};
     options.add_options()
@@ -774,6 +799,10 @@ try
         ("no-gud", po::bool_switch(&no_gud), "source-only stop-condition probe: copy/release frames without opening GUD")
         ("extend-hold", po::bool_switch(&extend_hold),
             "hold an Aethercast-compatible extend screencast without reading frames")
+        ("dump-frame", po::value<std::string>(&dump_frame),
+            "write one completed owned RGB565 frame as a binary PPM")
+        ("dump-frame-after", po::value<uint64_t>(&dump_frame_after),
+            "dump after this completed frame (default 1; requires --dump-frame)")
         ("capture-region", po::value<std::vector<int>>(&capture_region)->multitoken(),
             "experimental Mir screencast rectangle: X Y WIDTH HEIGHT");
     po::variables_map variables;
@@ -804,6 +833,10 @@ try
         throw std::runtime_error{"Aethercast-compatible extend mode calculates its own capture region; do not pass --capture-region"};
     if (extend_hold && (source_mode != "extend" || !no_gud))
         throw std::runtime_error{"--extend-hold requires --source-mode extend and --no-gud"};
+    if (variables.count("dump-frame-after") && dump_frame.empty())
+        throw std::runtime_error{"--dump-frame-after requires --dump-frame"};
+    if (!dump_frame.empty() && dump_frame_after == 0)
+        throw std::runtime_error{"--dump-frame-after must be positive"};
     running = true;
     signal(SIGINT, stop);
     signal(SIGTERM, stop);
@@ -912,6 +945,16 @@ try
     }
 
     auto next_report = std::chrono::steady_clock::now();
+    auto dump_completed_frame = [&dump_frame, dump_frame_after](Frame const& frame, uint64_t frame_number)
+    {
+        if (!dump_frame.empty() && frame_number >= dump_frame_after)
+        {
+            write_ppm(frame, dump_frame);
+            std::cerr << "mirgud: dumped completed RGB565 frame=" << frame_number << " path=" << dump_frame <<
+                " size=" << frame.width << "x" << frame.height << std::endl;
+            dump_frame.clear();
+        }
+    };
     std::unique_ptr<DirectCapture> direct;
     try
     {
@@ -935,6 +978,7 @@ try
                 auto frame = direct->next();
                 presenter.received();
                 ++frame_number;
+                dump_completed_frame(frame, frame_number);
                 if (no_gud && (frame_number == 1 || frame_number % 60 == 0))
                 {
                     auto const fingerprint = sampled_fingerprint(frame);
@@ -976,6 +1020,7 @@ try
             auto frame = capture.next();
             presenter.received();
             ++frame_number;
+            dump_completed_frame(frame, frame_number);
             if (no_gud && (frame_number == 1 || frame_number % 60 == 0))
             {
                 auto const fingerprint = sampled_fingerprint(frame);
