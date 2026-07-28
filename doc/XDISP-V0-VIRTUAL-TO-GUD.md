@@ -2,9 +2,9 @@
 
 ## Status
 
-**V0 implementation staged; hardware result pending.** No claim of HDMI
-visibility, 60-second stability, or resource boundedness is made by this
-document until the evidence procedure below is completed on the phone and Pi.
+**V0-B — VIRTUAL SOURCE STABLE, GUD PRESENTATION FAILED.** The source-only
+hardware evidence is recorded below; no HDMI visibility claim is made because
+Stage A GUD presentation timed out before a checkerboard could be confirmed.
 
 `mirgud` is a standalone client POC. It deliberately does not alter, enable,
 or consume the retired synthetic Android DisplayPort output. The normal Android
@@ -119,3 +119,37 @@ content, approximate FPS, Pi acknowledgement/journal, and all samples under a
 new ignored evidence directory. Classify the completed run exactly as V0-A,
 V0-B, V0-C, or V0-D from the V0 brief; until this is executed the only honest
 classification is **pending**.
+
+## 2026-07-28 hardware result — V0-B
+
+Evidence is retained under
+`gud/backport-4.9/env/local/evidence/xdisp-v0-hardware-2026-07-27T2359COT/`.
+The phone gate found the Pi at dynamic path `1-1.3`; the Pi was initially
+`active` and `configured`, the normal phone GUD driver advertised connected
+`1280x720`, and `mirgud.bin` SHA-256 was
+`b7861a00a27b7e3e140759fad32f48dc7ada9e98f2fc641bfeaeb11de8950cdc`.
+
+Stage A did **not** produce a successful GUD submission. The first atomic
+commit timed out and every later state request failed with `-110`; phone
+kernel evidence records `GUD bulk transfer failed after 0 retries: -110` and
+`GUD atomic update failed: -110`. The external monitor therefore was not
+claimed to show the checkerboard, and Stage B was not run against the failed
+sink. The Pi became unreachable over Wi-Fi immediately after the timeout;
+only read-only retries were made and its service was not restarted, rebooted,
+or otherwise changed.
+
+The independent source-only probe was launched through Lomiri's app launcher
+(direct SSH clients are intentionally rejected by the session authorizer). It
+received and released 2,324 CPU-mapped `1280x720` format-1 frames at roughly
+28 FPS, with zero conversion failures. Lomiri began at 141 FDs/1 sync file,
+plateaued around 154--157 FDs with 0--2 sync files while the probe ran, and
+settled at 151 FDs/1 sync file thirty seconds after it exited. There was no
+monotonic sync-file trend and no new binder `-12`, KGSL `-24`, `BUG:`, or
+`Oops` record. The retained `fdinfo` snapshot documents the small persistent
+FD delta for follow-up.
+
+**Classification: V0-B — VIRTUAL SOURCE STABLE, GUD PRESENTATION FAILED.**
+The completed-frame source is usable and resource-bounded over the observed
+interval, but the existing GUD transport failed before any live Mir pixels
+could reach the Pi HDMI monitor. Do not pursue Stage B or performance work
+until the `-110` Stage A transport failure and Pi reachability are resolved.
