@@ -415,6 +415,41 @@ Restoration settled at 90 FDs / 6 sync files with zero binder/KGSL errors.
 Evidence summary:
 `../gud/backport-4.9/env/local/evidence/xdisp-p0.2-test-d2-invalid-2026-07-27T2326COT/`.
 
+## 2026-07-27 Test D3 initial DisplayBuffer power synchronization
+
+Commit `ac7dd84` synchronized each constructed primary/external
+`DisplayBuffer` from the already-applied initial `DisplayConfiguration` power
+state before the `Display` constructor returned. It retained the D2
+configuration-path policy and added one-time initial-state logging. The
+compatible artifact SHA-256 was
+`7d923e2bb76a2ca9c20744722c180609d5c23fd66363dacd524083e417effbb8`.
+Eleven focused checks passed, including the constructor-time synthetic
+external-only control (without calling `display.configure()`), the normal
+primary-only startup regression, D2 configuration behavior, DisplayGroup,
+worker, and HWC-boundary controls.
+
+The packaged baseline was 90 FDs / 6 sync files with zero binder `-12` and
+KGSL `-24` errors. The required dynamic host gate found `1d50:614d` at
+`1-1.3`; the Pi service was active/configured with no receive in flight.
+
+This run achieved the intended initial topology repeatedly. The platform
+logged primary `config_power=3 buffer_power=3` (off), external
+`config_power=0 buffer_power=0` (on), and
+`xdisp compositor targets: primary=0 external=1 total=1`. Mir's public state
+also showed LVDS connected/unused and DisplayPort connected/used. Lomiri then
+exited before the five-second sample, with LightDM reporting the compositor
+broken pipe. This is **D3-C — valid one-target startup failure**. It is the
+first meaningful external-only startup failure result: FD/sync retention was
+not interpreted because the compositor did not survive long enough for the
+timed interval. The phone image has no `coredumpctl`, so no local coredump
+metadata/backtrace was available.
+
+The diagnostic bind mount was removed and the packaged plugin
+`cd0ddc0342d19df63798e9bbcf496e3657b543bd9827d53004b997454f00ae74` restored.
+LightDM was active and settled at 89 FDs / 5 sync files, with no binder/KGSL
+errors. Evidence summary:
+`../gud/backport-4.9/env/local/evidence/xdisp-p0.2-test-d3-valid-startup-failure-2026-07-27T2338COT/`.
+
 ## 2026-07-27 synthetic offscreen target gate
 
 Commit `eae00c7` introduced the first synthetic-only pbuffer/FBO render target
