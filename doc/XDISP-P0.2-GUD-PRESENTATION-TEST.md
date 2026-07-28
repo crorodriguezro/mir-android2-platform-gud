@@ -296,6 +296,40 @@ GUD a non-Mir secondary presentation path (or repair the relevant upstream
 multi-output lifecycle) before it can safely activate an external desktop.
 P0.2 remains **in progress**; no payload was sent in these controls.
 
+## 2026-07-27 external-only active-output control
+
+Commit `bdbfc5b` made the test-only policy explicit: with a discovered
+synthetic GUD output, the primary is reported connected/unused/off and the
+synthetic DisplayPort output connected/used/on. It retains the existing
+diagnostic bypasses: no synthetic compositor buffer, Android HWC bookkeeping,
+worker, KMS, USB, or Pi payload work. The compatible artifact SHA-256 was
+`6912e50de8d14527e30a127586e15093d0d691968556aa56ad97673c86cd2d8c`; the
+dedicated output-policy test and the existing six worker/HWC-boundary checks
+passed.
+
+After a fresh OnePlus boot, the packaged baseline was 90 FDs/6 sync files with
+zero binder `-12` and KGSL `-24` errors. The mandatory dynamic gate found
+`1d50:614d` at `1-1.3`, and Pi preflight was active/configured with no unsafe
+receive state. The unchanged normal `gud.ko` was loaded only to recreate the
+post-reboot GUD card for mode discovery.
+
+Mir 1.8.2 reported the requested runtime configuration exactly: Output 1 LVDS
+was connected, unused, and powered off; Output 2 DisplayPort was connected,
+used, powered on, and selected the advertised 1280x720 mode. Lomiri then
+exited repeatedly before a measurement interval began; LightDM logged `Unity
+System Compositor: Failed to write to compositor: Broken pipe` and reached its
+restart limit. Consequently there are no 5/15/30/60-second FD samples and no
+fdinfo classification: this is not evidence for either the stable or leaking
+external-only cases.
+
+This is **Result C**: on this Mir 1/Lomiri stack the primary-unused,
+external-used configuration reaches Mir's reported runtime state but does not
+survive Lomiri startup. The test plugin was immediately unmounted. The
+packaged hash `cd0ddc0342d19df63798e9bbcf496e3657b543bd9827d53004b997454f00ae74`
+is restored, LightDM is active, and the restored compositor is 90 FDs/6 sync
+files with zero binder/KGSL errors. Full raw evidence is retained at
+`../gud/backport-4.9/env/local/evidence/xdisp-p0.2-external-only-2026-07-27T2158COT/`.
+
 ## 2026-07-27 synthetic offscreen target gate
 
 Commit `eae00c7` introduced the first synthetic-only pbuffer/FBO render target
