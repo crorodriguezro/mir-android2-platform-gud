@@ -113,6 +113,14 @@ private:
     std::shared_ptr<gl::ProgramFactory> const gl_program_factory;
     DisplayGroup mutable displays;
     OverlayOptimization const overlay_option;
+    struct ConfigureTrace
+    {
+        bool initialized{false};
+        bool used{false};
+        MirPowerMode requested_power{mir_power_mode_off};
+        MirPowerMode effective_power{mir_power_mode_off};
+    };
+    std::array<ConfigureTrace, 2> configure_trace;
 
     void update_configuration(std::lock_guard<decltype(configuration_mutex)> const&) const;
     void configure_locked(

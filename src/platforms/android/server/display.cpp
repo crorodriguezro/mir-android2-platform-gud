@@ -118,6 +118,22 @@ void set_powermode_all_displays(
         power_mode_safe(mga::DisplayName::external, control, config.external(), intended_mode); 
 }
 
+MirPowerMode effective_power_mode(
+    mga::DisplayName name,
+    mg::DisplayConfigurationOutput const& output,
+    mga::DisplayConfiguration& current_config)
+{
+    if (name == mga::DisplayName::primary &&
+        mga::should_expose_synthetic_gud_output() &&
+        current_config.external().connected &&
+        mga::should_mark_synthetic_output_used() &&
+        !mga::should_mark_primary_output_used() &&
+        !output.used)
+        return mir_power_mode_off;
+
+    return output.power_mode;
+}
+
 std::unique_ptr<mga::ConfigurableDisplayBuffer> create_display_buffer(
     std::shared_ptr<mga::DisplayDevice> const& display_device,
     mga::DisplayName name,
@@ -428,13 +444,37 @@ void mga::Display::configure_locked(
 
             if (config.primary().id == output.id)
             {
-                power_mode(mga::DisplayName::primary, *hwc_config, config.primary(), output.power_mode);
-                displays.configure(mga::DisplayName::primary, output.power_mode, transform, output.extents());
+                auto const effective_mode = effective_power_mode(
+                    mga::DisplayName::primary, output, config);
+                auto& trace = configure_trace[0];
+                if (!trace.initialized || trace.used != output.used ||
+                    trace.requested_power != output.power_mode ||
+                    trace.effective_power != effective_mode)
+                {
+                    mir::log_info(
+                        "xdisp configure: output=primary used=%d requested_power=%d effective_power=%d",
+                        output.used, output.power_mode, effective_mode);
+                    trace = {true, output.used, output.power_mode, effective_mode};
+                }
+                power_mode(mga::DisplayName::primary, *hwc_config, config.primary(), effective_mode);
+                displays.configure(mga::DisplayName::primary, effective_mode, transform, output.extents());
             }
             else if (config.external().id == output.id && config.external().connected)
             {
-                power_mode(mga::DisplayName::external, *hwc_config, config.external(), output.power_mode);
-                displays.configure(mga::DisplayName::external, output.power_mode, transform, output.extents());
+                auto const effective_mode = effective_power_mode(
+                    mga::DisplayName::external, output, config);
+                auto& trace = configure_trace[1];
+                if (!trace.initialized || trace.used != output.used ||
+                    trace.requested_power != output.power_mode ||
+                    trace.effective_power != effective_mode)
+                {
+                    mir::log_info(
+                        "xdisp configure: output=external used=%d requested_power=%d effective_power=%d",
+                        output.used, output.power_mode, effective_mode);
+                    trace = {true, output.used, output.power_mode, effective_mode};
+                }
+                power_mode(mga::DisplayName::external, *hwc_config, config.external(), effective_mode);
+                displays.configure(mga::DisplayName::external, effective_mode, transform, output.extents());
             }
         });
     old_outputs = config.output_connections();
