@@ -19,7 +19,6 @@
 #include "gl_context.h"
 #include "buffer.h"
 #include "framebuffer_bundle.h"
-#include "gud_render_only_control.h"
 #include "android_format_conversion-inl.h"
 #include "mir/graphics/display_report.h"
 #include "mir/graphics/gl_config.h"
@@ -267,8 +266,7 @@ void mga::FramebufferGLContext::swap_buffers() const
 {
     if (offscreen)
     {
-        if (mga::should_finish_gud_offscreen_frame())
-            glFinish();
+        glFinish();
     }
     else if (eglSwapBuffers(egl_display, egl_surface) == EGL_FALSE)
     {
