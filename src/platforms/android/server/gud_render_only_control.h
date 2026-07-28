@@ -12,12 +12,6 @@ inline bool should_start_gud_presentation_worker()
 {
     return false;
 }
-
-/* A render-only control may isolate output setup from synthetic GL rendering. */
-inline bool should_render_gud_offscreen_frame()
-{
-    return should_start_gud_presentation_worker();
-}
 }
 }
 }

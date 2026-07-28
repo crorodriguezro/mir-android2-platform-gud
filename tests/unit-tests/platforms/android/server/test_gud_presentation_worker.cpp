@@ -33,7 +33,6 @@ TEST(GudHwcBoundary, excludes_only_synthetic_external_from_android_hwc)
 TEST(GudRenderOnlyControl, does_not_start_the_presentation_worker)
 {
     EXPECT_FALSE(mga::should_start_gud_presentation_worker());
-    EXPECT_FALSE(mga::should_render_gud_offscreen_frame());
 }
 
 TEST(GudOffscreenTarget, replaces_only_the_synthetic_external_window_surface)
