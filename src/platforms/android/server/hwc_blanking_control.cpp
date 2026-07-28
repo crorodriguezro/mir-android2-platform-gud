@@ -156,7 +156,8 @@ mg::DisplayConfigurationOutput populate_config(
     geom::Size mm_size,
     MirPowerMode external_mode,
     MirPixelFormat display_format,
-    bool connected)
+    bool connected,
+    bool used = true)
 {
     geom::Point const origin{0,0};
     size_t const preferred_format_index{0};
@@ -183,7 +184,7 @@ mg::DisplayConfigurationOutput populate_config(
         external_modes,
         preferred_mode_index,
         mm_size,
-        connected,
+        used,
         connected,
         origin,
         preferred_format_index,
@@ -266,7 +267,7 @@ mg::DisplayConfigurationOutput mga::HwcBlankingControl::active_config_for(Displa
 {
     if (gud_external && display_name == mga::DisplayName::external)
         return populate_config(display_name, {gud_mode.width, gud_mode.height}, gud_mode.vrefresh_hz, {0, 0},
-                               mir_power_mode_off, format, true);
+                               mir_power_mode_off, format, true, mga::should_mark_synthetic_output_used());
 
     auto configs = hwc_device->display_configs(display_name);
     if (configs.empty())
@@ -331,7 +332,7 @@ mg::DisplayConfigurationOutput mga::HwcPowerModeControl::active_config_for(Displ
 {
     if (gud_external && display_name == mga::DisplayName::external)
         return populate_config(display_name, {gud_mode.width, gud_mode.height}, gud_mode.vrefresh_hz, {0, 0},
-                               mir_power_mode_off, format, true);
+                               mir_power_mode_off, format, true, mga::should_mark_synthetic_output_used());
     auto configs = hwc_device->display_configs(display_name);
     if (configs.empty())
     {

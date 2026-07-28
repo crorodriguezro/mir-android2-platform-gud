@@ -22,6 +22,11 @@ inline bool should_offer_synthetic_output_to_compositor()
 {
     return false;
 }
+
+inline bool should_mark_synthetic_output_used()
+{
+    return false;
+}
 }
 }
 }
