@@ -154,3 +154,92 @@ H.264/OMX is **not part of E0.1, E1, E2, E3, or the external-display milestone**
 Only after the complete Aethercast-style extended-display + Raw GUD path has passed the milestone above should a separate future project evaluate whether replacing or supplementing Raw GUD with a hardware-compressed video transport is worthwhile.
 
 That later decision should compare the finished Raw GUD implementation against candidate compressed transports using measured bandwidth, latency, text quality, motion behavior, CPU/GPU cost, reliability, and implementation complexity. H.264 is one possible optimization candidate, not a prerequisite and not the next phase.
+
+## E0.1 live Lomiri application-content result (2026-07-28)
+
+**Classification: E0.1-A — real landscape Lomiri application content is
+captured correctly.** The validated source remains the system Mir server at
+`/run/mir_socket`, using the Aethercast-compatible client identity, vertical
+mirror, two requested buffers, and the retained off-primary screencast. No
+GUD card was opened for this gate.
+
+The source was run as:
+
+```bash
+/home/phablet/mirgud-e01-orient.bin \
+  --source-mode extend --mir-socket-file /run/mir_socket \
+  --size 1280 720 --no-gud \
+  --dump-frame /home/phablet/xdisp-e01-unlocked-morph.ppm \
+  --dump-frame-after 1500 --monitor-pid 2298
+```
+
+At five seconds, `mirout /run/mir_socket` reported `Virtual` as connected,
+enabled and on at `1280x720+1080+0`, `form_factor=monitor`. It returned to
+disconnected after the source was terminated; both `lomiri-system-compositor`
+and `lomiri` remained alive. No new `binder -12`, `KGSL -24`, `BUG`, or
+`Oops` record was found in the accessible phone kernel tail.
+
+### Visual evidence
+
+The first settled shell dump was
+`/home/phablet/xdisp-e01-shell-late.ppm` (local copy
+`/tmp/xdisp-e01-shell-late.ppm`, SHA-256
+`cfab273a23f87b34b300641753a14d4d62a92d77fccd6d6ab5d701c50244ad02`).
+It is an upright `1280x720` landscape Lomiri external shell with a panel,
+left launcher, landscape background, and status/lock area. The initial CPU
+copy was vertically inverted; this exposed that this phone's CPU
+`MirGraphicsRegion` is top-down. `b1084cb` corrected only the owned RGB565
+row order. The settled frame thereafter is upright; no scaling or topology
+change was introduced.
+
+The application-content frame used for the gate was
+`/home/phablet/xdisp-e01-unlocked-morph.ppm` (local copy
+`/tmp/xdisp-e01-unlocked-morph.ppm`, SHA-256
+`7e8155cb2332e225373cbed05ecfb65172c906b16f73388d1efa98a7fbaebb7b`).
+It shows the Lomiri Gallery application in a decorated landscape external
+window: natural text and controls, a wide application area, the external
+launcher/panel, and uncovered landscape wallpaper at either side. It is not a
+scaled or horizontally stretched `1080x2280` phone image.
+
+The second-app switch dump was
+`/home/phablet/xdisp-e01-settings.ppm` (local copy
+`/tmp/xdisp-e01-settings.ppm`, SHA-256
+`01598d26795ea73324e120bcf917491c58b43b41650c8779ba70a0429b1f1609`).
+It shows `lomiri-system-settings` replacing Gallery in the same external
+landscape scene, with its natural two-column System Settings layout. The
+source fingerprints changed during the Gallery/Settings transitions
+(`0x82fb6fa70d05ac25` -> `0xb6f1ecccea33f407` ->
+`0xf942696fa18a1655` in the Settings run), then stabilized once the selected
+application was rendered.
+
+No Terminal desktop entry/package was present on this phone; the installed
+normal Lomiri applications used for the visual matrix were Gallery and System
+Settings. `lomiri-app-launch lomiri-system-settings` reported a later registry
+disconnect after starting, but the captured external frame itself proves the
+settings application was rendered successfully.
+
+The physical phone-side state is not observable through SSH and was not
+asserted from the frame dumps. Record a direct observation of whether Lomiri
+showed Virtual Touchpad or another supported phone-side state with the E1
+hardware observation.
+
+### Source stability samples
+
+| Sample | Completed frames | Client FDs | Conversion failures | Notes |
+| --- | ---: | ---: | ---: | --- |
+| baseline | 0 | n/a | 0 | Virtual disconnected before source creation |
+| first frame | 1 | 14 | 0 | CPU-mapped format 1, stride 5120 |
+| 5 s | 106 | 14 | 0 | Virtual connected/used at 1280x720+1080+0 |
+| 15 s | 360 | 14 | 0 | application layout settled |
+| 30 s | 720 | 14 | 0 | stable frame ownership |
+| 60 s | 1500 | 14 | 0 | stable at about 25 FPS |
+| teardown | 0 | n/a | 0 | Virtual disconnected; both compositors alive |
+
+`monitor_fds` and `monitor_sync_files` were unavailable to the unprivileged
+client (`0` from the protected root compositor `/proc` view); the client FD
+count remained flat, with no sign of the former monotonic resource failure.
+
+E0.1 therefore proves that the Aethercast-style system-Mir virtual output
+does produce a real, correctly oriented, native `1280x720` Lomiri external
+application scene. E1 may proceed only after the already-established GUD/Pi
+preflight is again healthy.
