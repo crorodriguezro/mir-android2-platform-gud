@@ -53,6 +53,7 @@ TEST(GudSyntheticOutputControl, exposes_the_second_output_while_bypassing_hwc_bo
 {
     EXPECT_TRUE(mga::should_expose_synthetic_gud_output());
     EXPECT_TRUE(mga::should_bypass_synthetic_hwc_bookkeeping());
+    EXPECT_FALSE(mga::should_offer_synthetic_output_to_compositor());
 }
 
 TEST(GudOffscreenTarget, render_only_lifecycle_has_no_android_framebuffer)

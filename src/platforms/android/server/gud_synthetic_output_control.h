@@ -17,6 +17,11 @@ inline bool should_bypass_synthetic_hwc_bookkeeping()
 {
     return true;
 }
+
+inline bool should_offer_synthetic_output_to_compositor()
+{
+    return false;
+}
 }
 }
 }

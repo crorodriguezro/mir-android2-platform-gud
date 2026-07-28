@@ -19,6 +19,7 @@
 #include "display_group.h"
 #include "configurable_display_buffer.h"
 #include "display_device_exceptions.h"
+#include "gud_synthetic_output_control.h"
 #include <boost/throw_exception.hpp>
 #include <stdexcept>
 
@@ -47,8 +48,13 @@ void mga::DisplayGroup::for_each_display_buffer(std::function<void(mg::DisplayBu
 {
     std::unique_lock<decltype(guard)> lk(guard);
     for(auto const& db : dbs)
+    {
+        if (db.first == mga::DisplayName::external &&
+            !mga::should_offer_synthetic_output_to_compositor())
+            continue;
         if (db.second->power_mode() != mir_power_mode_off)
             f(*db.second);
+    }
 }
 
 void mga::DisplayGroup::add(DisplayName name, std::unique_ptr<ConfigurableDisplayBuffer> buffer)
