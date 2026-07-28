@@ -376,13 +376,16 @@ auto mga::Display::create_hardware_cursor() -> std::shared_ptr<Cursor>
 
 std::unique_ptr<mg::VirtualOutput> mga::Display::create_virtual_output(int width, int height)
 {
+    mir::log_info("xdisp virt trace: create_virtual_output %dx%d", width, height);
     auto enable_virtual_output = [this, width, height]
     {
+        mir::log_info("xdisp virt trace: enable callback %dx%d", width, height);
         config.set_virtual_output_to(width, height);
         on_hotplug();
     };
     auto disable_virtual_output = [this]
     {
+        mir::log_info("xdisp virt trace: disable callback");
         config.disable_virtual_output();
         on_hotplug();
     };
