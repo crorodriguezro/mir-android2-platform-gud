@@ -312,6 +312,38 @@ terminal `Poisoned` state. The Pi service and UDC remained active/configured,
 but the receiver explicitly directs that a poisoned instance must not be
 stopped, restarted, rebooted, or retried.
 
+#### 64 KB versus 12.8 KB transport boundary
+
+The failed `64000`-byte transfer identifies a transport configuration mismatch,
+not an E0.1 or `mirgud` regression. The normal module used in this run
+advertised `max_buffer_size=8294400`; its uncompressed `gud-kms-fill` update
+therefore selected a `1280x25` RGB565 rectangle (`1280 * 25 * 2 = 64000`).
+That size is legal for the normal module's descriptor, but it is not the
+qualified OnePlus transport boundary.
+
+The passing `<=12800`-byte evidence belongs to the separately built,
+explicitly named `xdisp-lz4-12800` diagnostic module, not to the normal
+`/home/phablet/gud.ko`. That variant adaptively plans complete-row rectangles
+and rejects every actual submission larger than 12,800 bytes; because both
+modules have the internal name `gud`, it must replace—not coexist with—the
+normal module during its isolated diagnostic run.
+
+After physical recovery of the poisoned receiver, the next task is
+**transport-only** and must not alter E0.1, E1 source code, or `mirgud`:
+
+1. Preserve the failed phone/Pi logs and identify the normal-module SHA,
+   descriptor `max_buffer_size`, `SET_BUFFER` length/compressed length, host
+   `trlen`, and Pi received byte count as the 64 KB baseline.
+2. Stage and identify the existing named `xdisp-lz4-12800` diagnostic artifact
+   by its module version/description and SHA; never overwrite the normal
+   module.
+3. Run only the static GUD gate after fresh enumeration, requiring every
+   actual submitted payload to be `<=12800` and every Pi receive sequence to
+   return from `InFlight` to `Idle` with matching byte counts.
+4. Treat any larger payload, `-110`, short/invalid read, poisoned session, or
+   receiver fault as another transport stop condition. E1 remains blocked
+   until this static gate passes.
+
 This is a Phase 2 stop condition, not an E1 result. No E1 source-to-presenter
 command, HDMI visual claim, phone-side UX claim, or 60-second test was run.
 Preserve the phone/Pi logs and recover the receiver only through the documented
