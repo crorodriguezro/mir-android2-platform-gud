@@ -285,23 +285,38 @@ the fixed Aethercast-compatible system socket and requested `(1080,0,
 /run/mir_socket` reported `Virtual, disconnected`; no `mirgud` process
 remained and both `lomiri-system-compositor` and `lomiri` were alive.
 
-### GUD preflight state
-
-E1 remains blocked at Phase 2. The phone is reachable, but only MSM
-`/dev/dri/card0` exists; no `gud` module, GUD DRM card, connected GUD
-connector, or advertised `1280x720` GUD mode is present. The host's USB
-probe likewise found no `1d50:614d` device. Therefore neither the static
-Raw-GUD checkerboard nor the E1 source-to-presenter command was run.
+### GUD preflight and transport result
 
 The user has granted standing authorization to use the existing Pi SSH
-credentials for this work; no further credential-authorization prompt is
-required. The Pi preflight is currently operationally blocked instead: the
-temporary `/tmp/gud-ssh-askpass` helper is absent and the Pi was unreachable
-at `192.168.1.110` when Phase 2 resumed. The phone at `192.168.1.120` was
-also unreachable at that time, so its newly reported GUD enumeration could
-not yet be independently recorded. Once both hosts are reachable and the
-credential helper is restored through the established local mechanism, the
-intended E1 command is:
+credentials for this work. The Pi receiver preflight passed: `gud-userspace`
+was active, FunctionFS was mounted at `/dev/ffs-usb-gadget0-0`, its bulk OUT
+endpoint was open, and the `3f980000.usb` UDC was `configured`.
+
+The OnePlus 6 saw the receiver at the dynamic USB path
+`1-1.2:1.0` (`1d50:614d`). The unchanged
+`/home/phablet/gud.ko` (SHA-256
+`bd15c2c1bc4cd941bcac88bb13276b67620d9e2eec515973ff815add68f3630c`)
+was then loaded as the smallest recovery action. It created `/dev/dri/card1`
+while MSM remained `/dev/dri/card0`; `card1` resolved to the GUD USB interface
+and its `Virtual-2` connector became connected. The receiver advertised and
+accepted the exact `1280x720` timing during the modeset.
+
+**Phase 2 transport gate failed, so E1 has not started.** The established
+`/home/phablet/gud-kms-fill /dev/dri/card1` static RGB565 test began the
+`1280x720` modeset, but its first `64000`-byte payload failed. The phone
+reported `GUD bulk transfer failed after 0 retries: -110`, followed by
+`GUD atomic update failed: -110`; its connector query then also timed out.
+The Pi received the mode-check/commit and display-enable controls, then
+recorded an invalid FunctionFS read for payload sequence 1 and entered its
+terminal `Poisoned` state. The Pi service and UDC remained active/configured,
+but the receiver explicitly directs that a poisoned instance must not be
+stopped, restarted, rebooted, or retried.
+
+This is a Phase 2 stop condition, not an E1 result. No E1 source-to-presenter
+command, HDMI visual claim, phone-side UX claim, or 60-second test was run.
+Preserve the phone/Pi logs and recover the receiver only through the documented
+physical/hardware path before repeating the known-good static transport gate.
+The intended E1 command after that gate passes is:
 
 ```bash
 env MIR_CLIENT_PLATFORM_PATH=/usr/lib/aarch64-linux-gnu/mir1/client-platform \
