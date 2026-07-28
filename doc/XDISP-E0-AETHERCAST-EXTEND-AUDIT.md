@@ -360,3 +360,55 @@ env MIR_CLIENT_PLATFORM_PATH=/usr/lib/aarch64-linux-gnu/mir1/client-platform \
 It must first follow the Phase 2 static-transport gate, then run the full
 visual and 60-second stability matrix. No E1 classification, HDMI visual
 claim, phone-side UX claim, or Raw-GUD presentation result is made here.
+
+## Capped transport recovery and E1 integration (2026-07-28)
+
+The Pi was physically rebooted after the poisoned normal-module run. Its new
+receiver instance was active with FunctionFS mounted and the UDC configured.
+The normal phone module was then unloaded and replaced with the separately
+staged diagnostic artifact
+`/home/phablet/gud.xdisp-p0.1-adaptive-12800-2a8f59b.ko` (SHA-256
+`2369eccc5cf3afc7ff8364921b8ce94fec8363518466f727b71d2d009c6c5999`,
+version `xdisp-p0.1-adaptive-12800-v1`). Its unique probe record confirms the
+`gud_xdisp_lz4_12800` driver and an actual bulk-payload cap of `12800` bytes.
+MSM remained card0 and the diagnostic GUD interface re-enumerated as card1.
+
+The static `gud-kms-fill /dev/dri/card1` gate then passed: the phone logged a
+maximum submitted payload of `12761`, and the Pi received its four complete
+payloads (`12761`, `12618`, `12149`, and `3325` bytes) without an error or
+poisoned receive session.
+
+With that gate passed, the unchanged E0.1 source was connected to the bounded
+Raw-GUD presenter for the planned 68-second E1 run:
+
+```bash
+env MIR_CLIENT_PLATFORM_PATH=/usr/lib/aarch64-linux-gnu/mir1/client-platform \
+    MIR_SERVER_PLATFORM_PATH=/usr/lib/aarch64-linux-gnu/mir1/server-platform \
+    /home/phablet/mirgud-e1-7027738.bin \
+    --source-mode extend --mir-socket-file /run/mir_socket \
+    --size 1280 720 --monitor-pid 2298
+```
+
+It completed the initial modeset and sustained the exact system-Mir
+off-primary request. During the active run, `Virtual` was connected/used at
+`1280x720+1080+0`; the source logged top-down CPU mapping and bounded frame
+replacement with no conversion or GUD-submission failure in the captured
+metrics. The source client held 15 FDs in its sampled reports; protected root
+compositor FD/sync counts remained unavailable to that client.
+
+The Pi recorded `5864` complete capped payload receives during the post-reboot
+window, with an observed maximum transfer size of `12794` bytes, all below the
+`12800` invariant. It remained active/configured with no new `Poisoned`,
+short-FunctionFS-read, or transport-timeout record. After timed termination,
+no `mirgud` process remained; `mirout /run/mir_socket` reported `Virtual,
+disconnected`, and both `lomiri-system-compositor` and `lomiri` remained alive.
+There was no new diagnostic-module-era GUD `-110`, atomic-update failure,
+`BUG`, `Oops`, binder `-12`, or KGSL `-24` record.
+
+**Current classification: E1 transport/lifecycle integration passed; final
+visual classification is pending direct HDMI observation.** The phone was at
+the Lomiri greeter during the remote run, and SSH cannot observe the monitor
+or physical-phone external-display UX. Therefore this record does not yet
+claim upright HDMI pixels, colors, application switching, a native landscape
+application window, or Virtual Touchpad behavior. Those direct observations
+must be made from an unlocked session before calling the result E1-A.
