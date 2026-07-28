@@ -138,19 +138,19 @@ USB → Pi → HDMI
 
 The mirror/capture path remains useful as a fallback and transport diagnostic, but it is no longer the preferred user-facing architecture because it renders the phone's portrait scene and scales it into a landscape mode.
 
-### Near-term phases
+### Active phases
 
 1. **E0.1 — visual-content gate, source only.** Run extend mode from an unlocked Lomiri session, create changing application content on output 3, and prove that the captured `1280x720` frames contain a correctly laid-out landscape Terminal/application rather than a stretched portrait scene.
 2. **E1 — connect the proven extend source to Raw GUD.** Feed those native `1280x720` completed frames into the existing RGB565/GUD presenter and verify the full system-Mir → Lomiri external scene → GUD → Pi → HDMI path.
 3. **E2 — extended-display lifecycle and UX hardening.** Validate clean connect/disconnect, repeated reconnects, shell/application behavior, phone-side Virtual Touchpad or equivalent supported behavior, pointer/window behavior where applicable, monitor mode selection, and 60-second resource stability.
-4. **E3 — Raw GUD quality/performance hardening.** Improve the working raw path only as needed for a usable product: frame pacing, stale-frame dropping, damage/update behavior, transport recovery, mode handling, and visual correctness. Do not replace the source architecture while these fundamentals are still being validated.
+4. **E3 — Raw GUD quality/performance hardening.** Improve the working raw path as needed for a usable product: frame pacing, stale-frame dropping, damage/update behavior, transport recovery, mode handling, and visual correctness. Do not replace the source architecture while these fundamentals are still being validated.
 
-The external-display milestone is complete only after the extended landscape UI is visually correct on HDMI, applications are usable, lifecycle/reconnect behavior is reliable, and the Raw GUD path is resource-bounded for sustained operation.
+The **active roadmap ends with E3 and external-display milestone acceptance**. The milestone is complete only after the extended landscape UI is visually correct on HDMI, applications are usable, lifecycle/reconnect behavior is reliable, monitor modes behave correctly, and the Raw GUD path is resource-bounded and sufficiently stable for sustained operation.
 
-## Later transport optimization — explicitly after extended display is complete
+## Post-milestone transport research — not part of the active roadmap
 
-H.264/OMX is **not part of E0, E1, E2, or the initial Raw GUD hardening work**. Do not start encoder, decoder, zero-copy, or H.264 USB work while the extended-display source, Lomiri behavior, GUD presentation, lifecycle, or usability still has unresolved issues.
+H.264/OMX is **not part of E0.1, E1, E2, E3, or the external-display milestone**. Do not start encoder, decoder, zero-copy, compressed-video USB, or related H.264 work while any extended-display source, Lomiri behavior, Raw GUD presentation, lifecycle, monitor-mode, resource-stability, visual-quality, or usability work remains unresolved.
 
-Only after the complete Aethercast-style extended-display path works reliably end-to-end should a separate later phase evaluate whether replacing or supplementing Raw GUD with a hardware-compressed video transport is worthwhile.
+Only after the complete Aethercast-style extended-display + Raw GUD path has passed the milestone above should a separate future project evaluate whether replacing or supplementing Raw GUD with a hardware-compressed video transport is worthwhile.
 
-That later decision should compare the already-working Raw GUD implementation against an H.264 path using measured bandwidth, latency, text quality, motion behavior, CPU/GPU cost, and implementation complexity. H.264 is an optimization candidate, not a prerequisite for the external-display architecture.
+That later decision should compare the finished Raw GUD implementation against candidate compressed transports using measured bandwidth, latency, text quality, motion behavior, CPU/GPU cost, reliability, and implementation complexity. H.264 is one possible optimization candidate, not a prerequisite and not the next phase.
