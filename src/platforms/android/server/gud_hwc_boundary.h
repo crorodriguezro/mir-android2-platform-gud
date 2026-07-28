@@ -26,6 +26,11 @@ inline bool should_arm_android_hwc_acquire_fence(bool synthetic_gud_external, Di
 {
     return should_submit_to_android_hwc(synthetic_gud_external, display);
 }
+
+inline bool affects_hwc_pacing(bool synthetic_gud_external, DisplayName display)
+{
+    return should_submit_to_android_hwc(synthetic_gud_external, display);
+}
 }
 }
 }

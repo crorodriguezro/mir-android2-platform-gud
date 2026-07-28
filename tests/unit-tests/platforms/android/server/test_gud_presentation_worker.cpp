@@ -28,6 +28,11 @@ TEST(GudHwcBoundary, excludes_only_synthetic_external_from_android_hwc)
     EXPECT_TRUE(mga::should_arm_android_hwc_acquire_fence(true, mga::DisplayName::primary));
     EXPECT_FALSE(mga::should_arm_android_hwc_acquire_fence(true, mga::DisplayName::external));
     EXPECT_TRUE(mga::should_arm_android_hwc_acquire_fence(true, mga::DisplayName::virt));
+
+    EXPECT_TRUE(mga::affects_hwc_pacing(true, mga::DisplayName::primary));
+    EXPECT_FALSE(mga::affects_hwc_pacing(true, mga::DisplayName::external));
+    EXPECT_TRUE(mga::affects_hwc_pacing(true, mga::DisplayName::virt));
+    EXPECT_TRUE(mga::affects_hwc_pacing(false, mga::DisplayName::external));
 }
 
 TEST(GudRenderOnlyControl, does_not_start_the_presentation_worker)

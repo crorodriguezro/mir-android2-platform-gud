@@ -171,7 +171,8 @@ void mga::HwcDevice::commit(std::list<DisplayContents> const& contents)
             /* The synthetic sink is not submitted to Android HWC to consume this fence. */
             if (mga::should_arm_android_hwc_acquire_fence(synthetic_gud_external, content.name))
                 content.list.swap_occurred();
-            purely_overlays = false;
+            if (mga::affects_hwc_pacing(synthetic_gud_external, content.name))
+                purely_overlays = false;
         }
     
         //setup overlays
