@@ -38,6 +38,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -74,9 +75,9 @@ void stop(int)
     running = false;
 }
 
-std::runtime_error system_error(char const* action)
+std::system_error system_error(char const* action)
 {
-    return std::runtime_error{std::string{action} + ": " + std::strerror(errno)};
+    return std::system_error{errno, std::system_category(), action};
 }
 
 unsigned fd_count(pid_t pid)
@@ -290,11 +291,6 @@ public:
             if (drmSetClientCap(fd, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1) ||
                 drmSetClientCap(fd, DRM_CLIENT_CAP_ATOMIC, 1))
                 throw system_error("cannot enable GUD atomic KMS capabilities");
-            setup();
-            allocate(frames[0]);
-            allocate(frames[1]);
-            std::memset(frames[0].map, 0, frames[0].dumb.size);
-            commit(frames[0], true);
         }
         catch (...)
         {
@@ -308,11 +304,48 @@ public:
         teardown();
     }
 
+    void setup()
+    {
+        if (setup_complete)
+            throw std::logic_error{"GUD KMS setup was requested twice"};
+        discover_kms();
+        allocate(frames[0]);
+        allocate(frames[1]);
+        setup_complete = true;
+    }
+
+    void initial_modeset()
+    {
+        if (!setup_complete)
+            throw std::logic_error{"GUD initial modeset requires completed setup"};
+        if (initial_modeset_complete)
+            throw std::logic_error{"GUD initial modeset was requested twice"};
+
+        std::cerr << "mirgud: V0.1 initial modeset begin" << std::endl;
+        std::memset(frames[0].map, 0, frames[0].dumb.size);
+        try
+        {
+            commit(frames[0], true);
+            initial_modeset_complete = true;
+            std::cerr << "mirgud: V0.1 initial modeset complete" << std::endl;
+        }
+        catch (std::system_error const& error)
+        {
+            std::cerr << "mirgud: V0.1 initial modeset failed errno=" << error.code().value() <<
+                " (" << error.code().message() << ")" << std::endl;
+            throw;
+        }
+    }
+
     void present(Frame const& source)
     {
+        if (!initial_modeset_complete)
+            throw std::logic_error{"GUD update attempted before the initial modeset"};
         if (source.width != width || source.height != height ||
             source.pixels.size() != static_cast<std::size_t>(width) * height)
             throw std::runtime_error{"screencast frame does not match the selected GUD mode"};
+        auto const update = ++update_sequence;
+        std::cerr << "mirgud: V0.1 update " << update << " begin" << std::endl;
         auto& frame = frames[next];
         for (uint32_t y = 0; y != height; ++y)
         {
@@ -321,11 +354,16 @@ public:
                 static_cast<std::size_t>(y) * frame.dumb.pitch / sizeof(uint16_t);
             std::memcpy(destination_row, source_row, static_cast<std::size_t>(width) * sizeof(uint16_t));
         }
-        commit(frame, false);
-        if (!first_submission_complete)
+        try
         {
-            std::cerr << "mirgud: first GUD RGB565 submission completed" << std::endl;
-            first_submission_complete = true;
+            commit(frame, false);
+            std::cerr << "mirgud: V0.1 update " << update << " complete" << std::endl;
+        }
+        catch (std::system_error const& error)
+        {
+            std::cerr << "mirgud: V0.1 update " << update << " failed errno=" << error.code().value() <<
+                " (" << error.code().message() << ")" << std::endl;
+            throw;
         }
         next ^= 1;
     }
@@ -338,7 +376,7 @@ private:
         void* map{MAP_FAILED};
     };
 
-    void setup()
+    void discover_kms()
     {
         auto resources = std::unique_ptr<drmModeRes, decltype(&drmModeFreeResources)>{
             drmModeGetResources(fd), drmModeFreeResources};
@@ -447,7 +485,10 @@ private:
         int const result = ok ? drmModeAtomicCommit(fd, request, modeset ? DRM_MODE_ATOMIC_ALLOW_MODESET : 0, nullptr) : -1;
         drmModeAtomicFree(request);
         if (result)
-            throw system_error("GUD atomic commit failed");
+        {
+            auto const saved_errno = errno;
+            throw std::system_error{saved_errno, std::system_category(), "GUD atomic commit failed"};
+        }
     }
 
     void teardown()
@@ -479,7 +520,9 @@ private:
     uint32_t required_height;
     int fd{-1};
     uint32_t connector{}, crtc{}, plane{}, mode_blob{}, width{}, height{}, next{};
-    bool first_submission_complete{};
+    uint64_t update_sequence{};
+    bool setup_complete{};
+    bool initial_modeset_complete{};
     drmModeModeInfo mode{};
     Properties properties{};
     KmsFrame frames[2];
@@ -690,7 +733,11 @@ try
     if (no_gud)
         std::cerr << "mirgud: GUD disabled for source-only stability probe" << std::endl;
     else
+    {
         kms = std::make_unique<GudKms>(width, height);
+        kms->setup();
+        kms->initial_modeset();
+    }
     LatestFramePresenter presenter{[&kms](Frame const& frame)
     {
         if (kms)

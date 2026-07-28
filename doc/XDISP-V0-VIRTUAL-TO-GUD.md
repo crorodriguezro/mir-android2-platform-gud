@@ -94,6 +94,57 @@ plugin; this V0 client does not require mounting a modified graphics plugin.
 Complete the existing safe GUD/Pi preflight before either stage. Start with the
 normal packaged Mir platform and a working primary phone display.
 
+### V0.1 transport gate
+
+V0.1 separates the black initial GUD modeset from Stage A. It is therefore
+incorrect to call a failure from the first `mirgud --pattern` attempt a
+checkerboard failure unless the logs first contain both:
+
+```text
+mirgud: V0.1 initial modeset complete
+mirgud: V0.1 update 1 begin
+```
+
+Before the first retry, collect the Pi's current and, when retained, previous
+boot (`uptime`, `who -b`, `last -x`, `journalctl --list-boots`,
+`journalctl -b -1`, `journalctl -k -b -1`, and
+`journalctl -u gud-userspace.service -b -1`). Search those records for panic,
+Oops, watchdog, OOM, voltage, DWC2/UDC, FunctionFS, endpoint, reset,
+disconnect, stall, and timeout messages. A Wi-Fi loss alone is not evidence of
+a Pi reboot.
+
+On the recovered Pi, preserve `systemctl status gud-userspace.service`, its
+PID and start time, `findmnt -t functionfs`, `ls -l /dev/ffs-usb-gadget0-0`,
+and `/sys/class/udc/*/{state,current_speed}` before the phone commits a
+framebuffer. On the phone, preserve the `1d50:614d` device and dynamic USB
+path, the GUD DRM card/connector/mode, and the descriptor line emitted by
+`gud.ko`. `service active` is not endpoint readiness; the first Pi
+`FunctionFS bulk OUT endpoint is armed` record is the receive-side boundary.
+
+Use the host driver's bounded trace for the first transaction only. The normal
+defaults remain quiet and retain the 3000 ms timeout:
+
+```bash
+# On the phone, after loading gud.ko; root required.
+echo 1 > /sys/module/gud/parameters/bulk_trace_limit
+echo 3000 > /sys/module/gud/parameters/bulk_timeout_ms
+```
+
+The matching Pi `RUST_LOG=debug` service trace must show `received and
+validated GUD SET_BUFFER`, `FunctionFS bulk OUT endpoint is armed`, the
+blocking-read start/completion records, and either `frame_stats` or its exact
+error. Correlate `GUD trace=N SET_BUFFER` and `GUD trace=N bulk` with the Pi
+payload sequence: advertised `max_buffer_size`, request `length`,
+`compressed_length`, submitted `trlen`, expected Pi bytes, and received Pi
+bytes must agree.
+
+Only after preserving the 3000 ms trace may a diagnostic retry use 10000 or
+30000 ms. A later completion records a slow-but-progressing path, not a fix;
+repeated timeouts at all three values are an unresolved receive stall. The
+active XDISP driver additionally caps each actual bulk payload at 12,800 bytes,
+so inspect the trace rather than assuming the initial 1280x720 modeset is one
+full-frame USB transfer.
+
 ```bash
 # Optional stop-condition probe: prove the virtual source itself stays healthy
 # before opening the GUD card. It copies/releases every frame but submits none.
