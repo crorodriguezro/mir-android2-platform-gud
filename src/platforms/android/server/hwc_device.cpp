@@ -26,7 +26,10 @@
 #include "hwc_fallback_gl_renderer.h"
 #include "gud_output.h"
 #include "gud_hwc_boundary.h"
+#include "gud_render_only_control.h"
 #include "mir/raii.h"
+#define MIR_LOG_COMPONENT "android-hwc-device"
+#include <mir/log.h>
 #include <limits>
 #include <algorithm>
 #include <chrono>
@@ -115,6 +118,10 @@ void mga::HwcDevice::commit(std::list<DisplayContents> const& contents)
 {
     std::vector<std::shared_ptr<mg::Buffer>> next_onscreen_overlay_buffers;
     std::list<DisplayContents> hwc_contents;
+    bool primary_needs_swap{false};
+    bool synthetic_external_present{false};
+    bool synthetic_external_needs_swap{false};
+    bool purely_overlays_before_synthetic_external{true};
 
     for (auto const& content : contents)
     {
@@ -134,7 +141,19 @@ void mga::HwcDevice::commit(std::list<DisplayContents> const& contents)
 
     for (auto& content : contents)
     {
-        if (content.list.needs_swapbuffers())
+        auto const synthetic_external = synthetic_gud_external &&
+            content.name == mga::DisplayName::external;
+        if (synthetic_external)
+        {
+            synthetic_external_present = true;
+            purely_overlays_before_synthetic_external = purely_overlays;
+        }
+        auto const needs_swap = content.list.needs_swapbuffers();
+        if (content.name == mga::DisplayName::primary)
+            primary_needs_swap = needs_swap;
+        if (synthetic_external)
+            synthetic_external_needs_swap = needs_swap;
+        if (needs_swap)
         {
             auto rejected_renderables = content.list.rejected_renderables();
             if (!rejected_renderables.empty())
@@ -188,6 +207,31 @@ void mga::HwcDevice::commit(std::list<DisplayContents> const& contents)
      */
     using namespace std;
     recommend_sleep = purely_overlays ? 10ms : 0ms;
+
+    ++pacing_commit_count;
+    if (primary_needs_swap)
+        ++pacing_primary_swap_count;
+    if (synthetic_external_needs_swap)
+        ++pacing_external_swap_count;
+    auto const now = std::chrono::steady_clock::now();
+    if (pacing_last_report.time_since_epoch().count() == 0 ||
+        now - pacing_last_report >= std::chrono::seconds{1})
+    {
+        mir::log_info(
+            "XDISP pacing commits=%llu primary_swap=%llu external_swap=%llu synthetic=%d "
+            "purely_before_external=%d purely_overlays=%d sleep_ms=%lld render_only=%d worker=%d",
+            static_cast<unsigned long long>(pacing_commit_count),
+            static_cast<unsigned long long>(pacing_primary_swap_count),
+            static_cast<unsigned long long>(pacing_external_swap_count),
+            synthetic_external_present, purely_overlays_before_synthetic_external, purely_overlays,
+            static_cast<long long>(recommend_sleep.count()),
+            !mga::should_start_gud_presentation_worker(),
+            mga::should_start_gud_presentation_worker());
+        pacing_commit_count = 0;
+        pacing_primary_swap_count = 0;
+        pacing_external_swap_count = 0;
+        pacing_last_report = now;
+    }
 }
 
 mga::HwcDevice::~HwcDevice()

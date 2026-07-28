@@ -25,6 +25,8 @@
 #include "hwc_layerlist.h"
 #include <memory>
 #include <vector>
+#include <chrono>
+#include <cstdint>
 
 namespace mir
 {
@@ -58,6 +60,10 @@ private:
     std::shared_ptr<SyncFileOps> const sync_ops;
     bool const synthetic_gud_external;
     std::chrono::milliseconds recommend_sleep{0};
+    uint64_t pacing_commit_count{0};
+    uint64_t pacing_primary_swap_count{0};
+    uint64_t pacing_external_swap_count{0};
+    std::chrono::steady_clock::time_point pacing_last_report{};
 };
 
 class HwcDevice20 : public HwcDevice
