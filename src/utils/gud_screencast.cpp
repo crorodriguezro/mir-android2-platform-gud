@@ -23,6 +23,7 @@
 #include <xf86drm.h>
 #include <xf86drmMode.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <csignal>
@@ -547,6 +548,43 @@ MirRectangle first_enabled_output(MirDisplayConfig const& config)
     throw std::runtime_error{"no enabled physical output is available for the screencast source"};
 }
 
+void log_topology(char const* phase, MirDisplayConfig const& config)
+{
+    auto const count = mir_display_config_get_num_outputs(&config);
+    for (int i = 0; i != count; ++i)
+    {
+        auto const* output = mir_display_config_get_output(&config, i);
+        auto const modes = mir_output_get_num_modes(output);
+        auto const current_mode_index = mir_output_get_current_mode_index(output);
+        auto const* mode = current_mode_index < static_cast<size_t>(modes) ?
+            mir_output_get_current_mode(output) : nullptr;
+        std::cerr << "mirgud: xdisp topology phase=" << phase <<
+            " id=" << mir_output_get_id(output) <<
+            " connected=" << (mir_output_get_connection_state(output) == mir_output_connection_state_connected) <<
+            " used=" << mir_output_is_enabled(output) <<
+            " mode=" << (mode ? std::to_string(mir_output_mode_get_width(mode)) + "x" +
+                std::to_string(mir_output_mode_get_height(mode)) : "none") <<
+            " top_left=(" << mir_output_get_position_x(output) << "," << mir_output_get_position_y(output) << ")"
+            << std::endl;
+    }
+}
+
+uint64_t sampled_fingerprint(Frame const& frame)
+{
+    /* Fixed small sample: enough to distinguish frames without hashing a full frame. */
+    uint64_t hash{1469598103934665603ULL};
+    auto const samples = std::min<std::size_t>(256, frame.pixels.size());
+    if (!samples)
+        return hash;
+    auto const step = std::max<std::size_t>(1, frame.pixels.size() / samples);
+    for (std::size_t i = 0; i < frame.pixels.size(); i += step)
+    {
+        hash ^= frame.pixels[i];
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
 MirGraphicsRegion graphics_region(MirBufferStream* stream)
 {
     MirGraphicsRegion region{0, 0, 0, mir_pixel_format_invalid, nullptr};
@@ -699,6 +737,7 @@ try
     std::string socket;
     bool pattern{};
     bool no_gud{};
+    std::vector<int> capture_region;
     po::options_description options{"Usage"};
     options.add_options()
         ("help,h", "show this help")
@@ -707,7 +746,9 @@ try
         ("cap-interval", po::value<uint32_t>(&capture_interval), "capture every N display intervals")
         ("monitor-pid", po::value<pid_t>(&monitor_pid), "sample this compositor PID's fd/sync_file counts")
         ("pattern", po::bool_switch(&pattern), "Stage A: send the static RGB565 checkerboard, without Mir")
-        ("no-gud", po::bool_switch(&no_gud), "source-only stop-condition probe: copy/release frames without opening GUD");
+        ("no-gud", po::bool_switch(&no_gud), "source-only stop-condition probe: copy/release frames without opening GUD")
+        ("capture-region", po::value<std::vector<int>>(&capture_region)->multitoken(),
+            "experimental Mir screencast rectangle: X Y WIDTH HEIGHT");
     po::variables_map variables;
     po::store(po::parse_command_line(argc, argv, options), variables);
     po::notify(variables);
@@ -726,6 +767,8 @@ try
         width = size[0];
         height = size[1];
     }
+    if (!capture_region.empty() && (capture_region.size() != 4 || capture_region[2] <= 0 || capture_region[3] <= 0))
+        throw std::runtime_error{"capture-region requires X Y WIDTH HEIGHT, with positive WIDTH and HEIGHT"};
     running = true;
     signal(SIGINT, stop);
     signal(SIGTERM, stop);
@@ -770,7 +813,12 @@ try
         mir_connection_create_display_configuration(connection.get()), &mir_display_config_release);
     if (!display_configuration)
         throw std::runtime_error{"cannot obtain Mir display configuration"};
-    auto const region = first_enabled_output(*display_configuration);
+    log_topology("before-screencast", *display_configuration);
+    auto const region = capture_region.empty() ? first_enabled_output(*display_configuration) :
+        MirRectangle{capture_region[0], capture_region[1],
+            static_cast<unsigned int>(capture_region[2]), static_cast<unsigned int>(capture_region[3])};
+    std::cerr << "mirgud: xdisp capture region requested=(" << region.left << "," << region.top << "," <<
+        region.width << "," << region.height << ")" << std::endl;
     MirPixelFormat format{};
     unsigned int formats{};
     mir_connection_get_available_surface_formats(connection.get(), &format, 1, &formats);
@@ -786,6 +834,10 @@ try
     mir_screencast_spec_release(spec);
     if (!screencast)
         throw std::runtime_error{"cannot create the Mir virtual/screencast stream"};
+    auto const after_screencast_configuration = mir::raii::deleter_for(
+        mir_connection_create_display_configuration(connection.get()), &mir_display_config_release);
+    if (after_screencast_configuration)
+        log_topology("after-screencast", *after_screencast_configuration);
     auto* const stream = mir_screencast_get_buffer_stream(screencast.get());
     if (!stream)
         throw std::runtime_error{"Mir screencast has no buffer stream"};
@@ -805,6 +857,9 @@ try
     if (direct)
     {
         bool first{};
+        uint64_t prior_fingerprint{};
+        bool have_prior_fingerprint{};
+        uint64_t frame_number{};
         while (running)
         {
             auto const start = std::chrono::steady_clock::now();
@@ -812,6 +867,15 @@ try
             {
                 auto frame = direct->next();
                 presenter.received();
+                ++frame_number;
+                if (no_gud && (frame_number == 1 || frame_number % 60 == 0))
+                {
+                    auto const fingerprint = sampled_fingerprint(frame);
+                    std::cerr << "mirgud: xdisp frame=" << frame_number << " hash=0x" << std::hex << fingerprint <<
+                        std::dec << " changed=" << (!have_prior_fingerprint || fingerprint != prior_fingerprint) << std::endl;
+                    prior_fingerprint = fingerprint;
+                    have_prior_fingerprint = true;
+                }
                 if (!first)
                 {
                     std::cerr << "mirgud: first CPU-complete virtual frame copied and converted" << std::endl;
@@ -836,11 +900,23 @@ try
     {
         EglCapture capture{connection.get(), stream, width, height};
         bool first{};
+        uint64_t prior_fingerprint{};
+        bool have_prior_fingerprint{};
+        uint64_t frame_number{};
         while (running)
         {
             auto const start = std::chrono::steady_clock::now();
             auto frame = capture.next();
             presenter.received();
+            ++frame_number;
+            if (no_gud && (frame_number == 1 || frame_number % 60 == 0))
+            {
+                auto const fingerprint = sampled_fingerprint(frame);
+                std::cerr << "mirgud: xdisp frame=" << frame_number << " hash=0x" << std::hex << fingerprint <<
+                    std::dec << " changed=" << (!have_prior_fingerprint || fingerprint != prior_fingerprint) << std::endl;
+                prior_fingerprint = fingerprint;
+                have_prior_fingerprint = true;
+            }
             if (!first)
             {
                 std::cerr << "mirgud: first GPU-complete virtual frame read back and converted" << std::endl;
