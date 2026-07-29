@@ -221,7 +221,17 @@ state.
 - root-only `Poison(reason)` and `ClearPoison` operations;
 - state, intent, dynamic GUD device/identity/connector, child PID, last error,
   and recovery-observed properties;
+- raw child and requested-stop diagnostics: string `LastChildExit`, boolean
+  `LastStopForced`, unsigned 64-bit `ForcedStopCount`, and unsigned 64-bit
+  monotonic `LastStopDurationMs`;
 - standard property changes and a `StateChanged` signal.
+
+`LastChildExit` records normal exit, requested graceful exit, confirmed daemon
+`SIGKILL`, unexpected signal, source failure, or poisoned transport without
+collapsing them into one stopped result. `LastStopForced` and
+`LastStopDurationMs` describe the latest completed requested stop and are not
+erased by a later spontaneous child failure. `ForcedStopCount` increments only
+when the reaped child confirms the daemon's escalation ended in `SIGKILL`.
 
 The daemon uses libudev to enumerate every primary DRM card rather than a
 fixed card range. It verifies driver `gud`, a connected exact `1280x720` mode,
@@ -230,7 +240,7 @@ Multiple usable GUD cards are rejected as ambiguous. Udev add/remove/change
 events and a passive reconciliation timer replace stale card numbering.
 
 Only `xdispd` starts the private managed `mirgud` child. It passes a separately
-opened and revalidated DRM fd plus connector id, requires an `XDISP1 ACTIVE`
+opened and revalidated DRM fd plus connector id, requires an `XDISP1 <monotonic-ms> ACTIVE`
 record after the first live frame commit, and applies a 10-second activation
 deadline. Normal stop sends `SIGTERM`, then `SIGKILL` after three seconds if
 the synchronous Mir path does not return. The child reports unavailable,
@@ -438,7 +448,9 @@ The qualified source and build identity are:
 
 | Item | Value |
 | --- | --- |
-| Repository | sibling `gud` repository |
+| Repository | `https://github.com/crorodriguezro/gud.git` |
+| Remote branch | `xdisp-oneplus-12800` |
+| Immutable annotated tag | `xdisp-oneplus-12800-v1` |
 | Source commit | `2a8f59ba84120f6b6f821b83a02c4d6a9459b32a` |
 | Source tree | `793dadf199bbb080c02a3807cfca37ad50a4527f` |
 | Commit subject | `gud: add adaptive LZ4 XDISP diagnostic` |
@@ -456,18 +468,40 @@ The qualified source and build identity are:
 | Phone artifact | `/home/phablet/gud.xdisp-p0.1-adaptive-12800-2a8f59b.ko` |
 | Normal module SHA-256 | `bd15c2c1bc4cd941bcac88bb13276b67620d9e2eec515973ff815add68f3630c` |
 
-The tracked manifest is `backport-4.9/env/target-manifest.env`. From an isolated
-checkout of the exact commit, the reproducible command is:
+Clone the immutable tag and prepare its ignored local manifest and kernel tree:
 
 ```bash
-make -C backport-4.9 \
-  MANIFEST=/home/cristianr/Projects/linux-mobile/gud/backport-4.9/env/target-manifest.env \
-  xdisp-lz4-12800
+git clone --branch xdisp-oneplus-12800-v1 --depth 1 \
+  https://github.com/crorodriguezro/gud.git gud-xdisp-oneplus-v1
+cd gud-xdisp-oneplus-v1/backport-4.9
+cp env/target-manifest.env.example env/target-manifest.env
+```
+
+Set the manifest to the public kernel URL
+`https://gitlab.com/ubports/community-ports/android9/oneplus-6/kernel-oneplus-sdm845.git`,
+kernel commit `6b190d86bd895acf891617e26840b1a85df6602c`, the values in the
+table above, the available AArch64 GCC 16.1.1 prefix, and an isolated kernel
+build directory. Then prepare and build both distinct modules:
+
+```bash
+./env/prepare-kernel.sh
+make MANIFEST="$PWD/env/target-manifest.env" clean modules
+make MANIFEST="$PWD/env/target-manifest.env" \
+  xdisp-lz4-12800-clean xdisp-lz4-12800
+sha256sum variants/xdisp-lz4-12800/gud.ko
+modinfo variants/xdisp-lz4-12800/gud.ko
+readelf -n variants/xdisp-lz4-12800/gud.ko
 ```
 
 The rebuild completed against the recorded kernel tree and reproduced the
 qualified artifact bit-for-bit: SHA-256, srcversion, vermagic, and ELF build ID
 all match the retained v1 module.
+
+Publication was independently verified after pushing: the remote branch and
+the peeled annotated tag both resolve to full source commit
+`2a8f59ba84120f6b6f821b83a02c4d6a9459b32a`. No workstation-only path or
+credential is needed to clone the source or kernel; generated captures,
+prepared kernel output, artifacts, and evidence remain intentionally ignored.
 
 The exact-commit normal and sanitizer suites, contract suite, and staging-tool
 suite all pass. They cover exact 12,800, adjacent 12,799/12,801 limits,
