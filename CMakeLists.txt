@@ -158,6 +158,7 @@ find_package(LTTngUST REQUIRED)
 
 pkg_check_modules(UDEV REQUIRED libudev)
 pkg_check_modules(GLIB REQUIRED glib-2.0)
+pkg_check_modules(GIO REQUIRED gio-2.0 gio-unix-2.0)
 pkg_search_module(MIRCLIENT REQUIRED mir1client mirclient)
 pkg_search_module(MIRCORE REQUIRED mir1core mircore)
 pkg_search_module(MIRPLATFORM REQUIRED mir1platform mirplatform)

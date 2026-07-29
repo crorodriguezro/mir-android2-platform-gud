@@ -525,19 +525,7 @@ mga::GudOutput::Mode selected_startup_mode;
 
 mga::GudOutput::Mode mga::GudOutput::startup_mode()
 {
-    std::call_once(startup_mode_once, []
-    {
-        int const fd = open_gud_card();
-        if (fd < 0)
-            return;
-        selected_startup_mode = read_connected_gud_mode(fd);
-        close(fd);
-        if (selected_startup_mode.valid())
-            mir::log_info("GUD POC selected startup output mode %ux%u at %.3f Hz",
-                          selected_startup_mode.width, selected_startup_mode.height,
-                          selected_startup_mode.vrefresh_hz);
-    });
-    return selected_startup_mode;
+    return {};
 }
 
 bool mga::GudOutput::available()

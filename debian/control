@@ -59,6 +59,16 @@ Description: Display Server for Ubuntu - android platform diagnostics utility
  .
  Contains unit tests
 
+Package: lomiri-xdisp
+Architecture: arm64
+Pre-Depends: ${misc:Pre-Depends}
+Depends: ${misc:Depends},
+         ${shlibs:Depends},
+         mir1-client-platform-android2-5
+Description: Native Lomiri GUD external-display lifecycle service
+ Owns dynamic GUD discovery and the proven Mir extended-screencast to Raw GUD
+ presentation lifecycle on supported Ubuntu Touch devices.
+
 Package: mir1-platform-graphics-android2-16
 Section: libs
 Architecture: i386 amd64 armhf arm64

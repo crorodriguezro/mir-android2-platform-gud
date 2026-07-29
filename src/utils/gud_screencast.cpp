@@ -47,12 +47,31 @@
 #include <fcntl.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/prctl.h>
 #include <unistd.h>
 
 namespace po = boost::program_options;
 namespace
 {
 std::atomic<bool> running;
+bool managed_mode{};
+int managed_status_fd{-1};
+
+enum ManagedExit
+{
+    managed_unavailable = 20,
+    managed_recoverable = 21,
+    managed_poisoned = 22
+};
+
+void managed_status(char const* value)
+{
+    if (!managed_mode || managed_status_fd < 0)
+        return;
+    auto const message = std::string{"XDISP1 "} + value + "\n";
+    auto const ignored = write(managed_status_fd, message.data(), message.size());
+    (void)ignored;
+}
 
 struct Frame
 {
@@ -119,8 +138,10 @@ unsigned sync_file_count(pid_t pid)
 class LatestFramePresenter
 {
 public:
-    explicit LatestFramePresenter(std::function<void(Frame const&)> present) :
-        present{std::move(present)}, worker{[this] { work(); }}
+    explicit LatestFramePresenter(
+        std::function<void(Frame const&)> present,
+        std::function<void()> first_presented = {}) :
+        present{std::move(present)}, first_presented{std::move(first_presented)}, worker{[this] { work(); }}
     {
     }
 
@@ -165,6 +186,17 @@ public:
         return statistics;
     }
 
+    void rethrow_failure()
+    {
+        std::exception_ptr failure;
+        {
+            std::lock_guard<std::mutex> lock{mutex};
+            failure = presentation_failure;
+        }
+        if (failure)
+            std::rethrow_exception(failure);
+    }
+
     void stop()
     {
         {
@@ -197,21 +229,31 @@ private:
                 present(*frame);
                 std::lock_guard<std::mutex> lock{mutex};
                 ++statistics.presented;
+                if (statistics.presented == 1 && first_presented)
+                    first_presented();
             }
             catch (std::exception const& error)
             {
                 std::cerr << "mirgud: GUD submission failed: " << error.what() << std::endl;
-                std::lock_guard<std::mutex> lock{mutex};
-                ++statistics.submit_failures;
+                {
+                    std::lock_guard<std::mutex> lock{mutex};
+                    ++statistics.submit_failures;
+                    presentation_failure = std::current_exception();
+                    pending.reset();
+                }
+                running = false;
+                return;
             }
         }
     }
 
     std::function<void(Frame const&)> present;
+    std::function<void()> first_presented;
     mutable std::mutex mutex;
     std::condition_variable wakeup;
     std::unique_ptr<Frame> pending;
     Stats statistics;
+    std::exception_ptr presentation_failure;
     bool stopping{};
     std::thread worker;
 };
@@ -281,14 +323,20 @@ struct Properties
 class GudKms
 {
 public:
-    GudKms(uint32_t required_width, uint32_t required_height) :
-        required_width{required_width}, required_height{required_height}
+    GudKms(uint32_t required_width, uint32_t required_height, int inherited_fd = -1, uint32_t required_connector = 0) :
+        required_width{required_width}, required_height{required_height}, required_connector{required_connector}
     {
-        fd = open_gud_card();
+        fd = inherited_fd >= 0 ? inherited_fd : open_gud_card();
         if (fd < 0)
             throw std::runtime_error{"no accessible GUD DRM card"};
         try
         {
+            auto* const version = drmGetVersion(fd);
+            bool const is_gud = version && version->name && !std::strcmp(version->name, "gud");
+            if (version)
+                drmFreeVersion(version);
+            if (!is_gud)
+                throw std::runtime_error{"managed DRM fd is not a GUD card"};
             if (drmSetClientCap(fd, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1) ||
                 drmSetClientCap(fd, DRM_CLIENT_CAP_ATOMIC, 1))
                 throw system_error("cannot enable GUD atomic KMS capabilities");
@@ -389,7 +437,8 @@ private:
         {
             auto candidate = std::unique_ptr<drmModeConnector, decltype(&drmModeFreeConnector)>{
                 drmModeGetConnector(fd, resources->connectors[i]), drmModeFreeConnector};
-            if (!candidate || candidate->connection != DRM_MODE_CONNECTED)
+            if (!candidate || candidate->connection != DRM_MODE_CONNECTED ||
+                (required_connector && candidate->connector_id != required_connector))
                 continue;
             for (int m = 0; m != candidate->count_modes; ++m)
                 if (candidate->modes[m].hdisplay == required_width && candidate->modes[m].vdisplay == required_height)
@@ -519,6 +568,7 @@ private:
 
     uint32_t required_width;
     uint32_t required_height;
+    uint32_t required_connector;
     int fd{-1};
     uint32_t connector{}, crtc{}, plane{}, mode_blob{}, width{}, height{}, next{};
     uint64_t update_sequence{};
@@ -780,6 +830,10 @@ try
     bool pattern{};
     bool no_gud{};
     bool extend_hold{};
+    bool managed{};
+    int gud_fd{-1};
+    uint32_t gud_connector{};
+    int status_fd{-1};
     std::string dump_frame;
     uint64_t dump_frame_after{1};
     std::vector<int> capture_region;
@@ -796,6 +850,10 @@ try
         ("no-gud", po::bool_switch(&no_gud), "source-only stop-condition probe: copy/release frames without opening GUD")
         ("extend-hold", po::bool_switch(&extend_hold),
             "hold an Aethercast-compatible extend screencast without reading frames")
+        ("managed", po::bool_switch(&managed), "run as an xdispd-managed child")
+        ("gud-fd", po::value<int>(&gud_fd), "inherited GUD DRM fd (managed mode)")
+        ("gud-connector", po::value<uint32_t>(&gud_connector), "required GUD connector id (managed mode)")
+        ("status-fd", po::value<int>(&status_fd), "managed status pipe fd")
         ("dump-frame", po::value<std::string>(&dump_frame),
             "write one completed owned RGB565 frame as a binary PPM")
         ("dump-frame-after", po::value<uint64_t>(&dump_frame_after),
@@ -834,6 +892,15 @@ try
         throw std::runtime_error{"--dump-frame-after requires --dump-frame"};
     if (!dump_frame.empty() && dump_frame_after == 0)
         throw std::runtime_error{"--dump-frame-after must be positive"};
+    if (managed && (gud_fd < 0 || !gud_connector || status_fd < 0 || pattern || no_gud || extend_hold ||
+        !dump_frame.empty() || source_mode != "extend" || socket != "/run/mir_socket"))
+        throw std::runtime_error{"managed mode requires inherited GUD/status fds and the fixed extend source"};
+    if (!managed && (variables.count("gud-fd") || variables.count("gud-connector") || variables.count("status-fd")))
+        throw std::runtime_error{"managed fd options require --managed"};
+    managed_mode = managed;
+    managed_status_fd = status_fd;
+    if (managed_mode)
+        prctl(PR_SET_PDEATHSIG, SIGTERM);
     running = true;
     signal(SIGINT, stop);
     signal(SIGTERM, stop);
@@ -842,15 +909,17 @@ try
         std::cerr << "mirgud: GUD disabled for source-only stability probe" << std::endl;
     else
     {
-        kms = std::make_unique<GudKms>(width, height);
+        kms = std::make_unique<GudKms>(width, height, gud_fd, gud_connector);
         kms->setup();
+        managed_status("MODESET_BEGIN");
         kms->initial_modeset();
+        managed_status("MODESET_COMPLETE");
     }
     LatestFramePresenter presenter{[&kms](Frame const& frame)
     {
         if (kms)
             kms->present(frame);
-    }};
+    }, [] { managed_status("ACTIVE"); }};
 
     if (pattern)
     {
@@ -867,6 +936,8 @@ try
                 next_report = std::chrono::steady_clock::now() + std::chrono::seconds{1};
             }
         }
+        presenter.stop();
+        presenter.rethrow_failure();
         return EXIT_SUCCESS;
     }
 
@@ -1041,10 +1112,27 @@ try
             std::this_thread::sleep_until(start + std::chrono::milliseconds{16 * capture_interval});
         }
     }
+    presenter.stop();
+    presenter.rethrow_failure();
     return EXIT_SUCCESS;
 }
 catch (std::exception const& error)
 {
     std::cerr << "mirgud: " << error.what() << std::endl;
-    return EXIT_FAILURE;
+    if (!managed_mode)
+        return EXIT_FAILURE;
+    auto const* system = dynamic_cast<std::system_error const*>(&error);
+    int const code = system ? system->code().value() : 0;
+    if (code == ENODEV || code == ENOENT)
+    {
+        managed_status("FATAL U");
+        return managed_unavailable;
+    }
+    if (code == ETIMEDOUT || code == EPROTO || code == EIO || code == EPIPE)
+    {
+        managed_status("FATAL P");
+        return managed_poisoned;
+    }
+    managed_status("FATAL R");
+    return managed_recoverable;
 }

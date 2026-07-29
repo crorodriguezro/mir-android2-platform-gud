@@ -163,7 +163,9 @@ properties, exported peer objects, persisted marker, and unchanged Mir output.
 ## E2.1 lifecycle architecture
 
 **Selected architecture: Option C - dedicated `xdisp` service with separate
-native control.** Implementation and hardware classification are pending.
+native control.** The source/component implementation is complete. Hardware
+activation and lifecycle classification are pending a verified safe receiver
+state and a current GUD DRM card.
 
 The service will be the sole authoritative owner of:
 
@@ -208,6 +210,82 @@ Physical receiver recovery and an explicit administrative poison-clear action
 are required before `poisoned_transport` may return to `disabled`. Automatic
 restart, reconnect, Pi service manipulation, and retry are forbidden in that
 state.
+
+### Implemented owner
+
+`xdispd` is a system-bus daemon owning `org.lomiri.XDisp` at
+`/org/lomiri/XDisp` with interface `org.lomiri.XDisp1`. It exposes:
+
+- `Enable`, `Disable`, `Activate`, and `Deactivate` for normal lifecycle
+  control;
+- root-only `Poison(reason)` and `ClearPoison` operations;
+- state, intent, dynamic GUD device/identity/connector, child PID, last error,
+  and recovery-observed properties;
+- standard property changes and a `StateChanged` signal.
+
+The daemon uses libudev to enumerate every primary DRM card rather than a
+fixed card range. It verifies driver `gud`, a connected exact `1280x720` mode,
+the DRM device number, sysfs identity, and connector before activation.
+Multiple usable GUD cards are rejected as ambiguous. Udev add/remove/change
+events and a passive reconciliation timer replace stale card numbering.
+
+Only `xdispd` starts the private managed `mirgud` child. It passes a separately
+opened and revalidated DRM fd plus connector id, requires an `XDISP1 ACTIVE`
+record after the first live frame commit, and applies a 10-second activation
+deadline. Normal stop sends `SIGTERM`, then `SIGKILL` after three seconds if
+the synchronous Mir path does not return. The child reports unavailable,
+recoverable, and unsafe transport exits separately; unsafe timeout/protocol/I/O
+errors durably enter `poisoned_transport` before stopping the child.
+
+The poison marker stores the affected sysfs identity. Recovery requires an
+observed removal of that identity followed by a usable add/change of the same
+identity; merely restarting the daemon, adding another DRM card, or calling
+`Activate` cannot clear poison. `ClearPoison` returns only to `disabled` and
+never activates automatically.
+
+The dormant platform POC no longer scans GUD or exposes a synthetic output.
+Normal Android primary/external compositor policy remains enabled. This leaves
+the dedicated daemon as the sole GUD lifecycle owner without changing the E1
+Virtual-output architecture.
+
+### Build and component result
+
+The phone-matched Noble/AArch64 build produced `xdispd`, private managed
+`mirgud`, and the Android2 platform module. Ten lifecycle tests pass, covering
+single-child activation, orderly disconnect, retained hotplug intent,
+explicit-only recoverable retry, persist-before-stop poison handling,
+physical-recovery gating, disable semantics, start failure, activation
+deadline, and restart with persisted poison. Twelve focused Android/GUD tests
+also pass, including the preserved RGB565 conversion/row-order and bounded
+presenter behavior plus synthetic-owner disable policy.
+
+The complete install image places:
+
+- `xdispd` and private `mirgud` under `/usr/libexec/lomiri-xdisp/`;
+- `xdisp.service` under `/usr/lib/systemd/system/`;
+- D-Bus activation and policy files under their standard system locations;
+- no public or unowned xdisp test binary.
+
+Final artifacts were staged, but not installed or run, as:
+
+| Artifact | SHA-256 |
+| --- | --- |
+| `/home/phablet/xdispd-e21-a1d0882.bin` | `a1d08829eddb9d41488d22ece98597a2d8e5b73535478867f55989fc0e258135` |
+| `/home/phablet/mirgud-e21-bbe5bb7.bin` | `bbe5bb7d8addfe1d3b825f494e82b6ee684eabf2f660fa968cc59c2f8f62c73b` |
+
+### Hardware gate (2026-07-29)
+
+The mandatory phone-side enumeration scan found the receiver dynamically at
+`/sys/bus/usb/devices/1-1.2` with `1d50:614d`. The `gud` module name was loaded,
+but only MSM `/dev/dri/card0` existed; there was no current GUD DRM card. The
+phone contained no running `xdispd` or `mirgud`, and system Mir remained at
+`Virtual, disconnected`.
+
+Direct Pi SSH safety verification was unavailable with the locally available
+credentials. Because receiver state could not be confirmed and no GUD card
+existed, no module unload/load, Pi service action, daemon installation,
+`Enable`, `Activate`, modeset, or USB payload submission was attempted. This
+is a pre-activation hardware block, not an E2.1 lifecycle failure.
 
 ## E2.2 reconnect matrix
 

@@ -26,6 +26,8 @@ docker run --rm \
     --workdir /src \
     "$image_tag" \
     cmake -S /src -B /build -G Ninja \
+        -DCMAKE_INSTALL_PREFIX=/usr \
+        -DCMAKE_INSTALL_LIBEXECDIR=libexec \
         -DMIR_ENABLE_TESTS=ON \
         -DMIR_BUILD_UNIT_TESTS=ON \
         -DMIR_RUN_UNIT_TESTS=ON
@@ -40,7 +42,7 @@ docker run --rm \
     --volume "$build_dir:/build" \
     --workdir /src \
     "$image_tag" \
-    cmake --build /build --target wrapper mirplatformgraphicsandroid mirgud mir_unit_tests_android2 --parallel "$build_jobs"
+    cmake --build /build --target wrapper mirplatformgraphicsandroid mirgud xdispd mir_unit_tests_android2 mir_unit_tests_xdisp --parallel "$build_jobs"
 
 docker run --rm \
     --network none \
@@ -53,3 +55,15 @@ docker run --rm \
     --workdir /build \
     "$image_tag" \
     /build/bin/mir_unit_tests_android2.bin --gtest_filter='GudPresentationWorker.*:GudHwcBoundary.*'
+
+docker run --rm \
+    --network none \
+    --cap-drop ALL \
+    --security-opt label=disable \
+    --user "$(id -u):$(id -g)" \
+    --env HOME=/tmp \
+    --volume "$repo_root:/src:ro" \
+    --volume "$build_dir:/build" \
+    --workdir /build \
+    "$image_tag" \
+    /build/bin/mir_unit_tests_xdisp.bin

@@ -1,0 +1,4 @@
+usr/libexec/lomiri-xdisp/*
+usr/lib/systemd/system/xdisp.service
+usr/share/dbus-1/system-services/org.lomiri.XDisp.service
+etc/dbus-1/system.d/org.lomiri.XDisp.conf

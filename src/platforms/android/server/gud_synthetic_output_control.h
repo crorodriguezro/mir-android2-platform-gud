@@ -10,12 +10,12 @@ namespace android
 {
 inline bool should_expose_synthetic_gud_output()
 {
-    return true;
+    return false;
 }
 
 inline bool should_bypass_synthetic_hwc_bookkeeping()
 {
-    return true;
+    return false;
 }
 
 inline bool should_offer_synthetic_output_to_compositor()
@@ -25,12 +25,12 @@ inline bool should_offer_synthetic_output_to_compositor()
 
 inline bool should_mark_synthetic_output_used()
 {
-    return true;
+    return false;
 }
 
 inline bool should_mark_primary_output_used()
 {
-    return false;
+    return true;
 }
 }
 }
