@@ -31,7 +31,7 @@ namespace
 char const* const bus_name = "org.lomiri.XDisp";
 char const* const object_path = "/org/lomiri/XDisp";
 char const* const interface_name = "org.lomiri.XDisp1";
-char const* const state_dir = "/var/lib/xdisp";
+char const* const state_dir = "/home/phablet/.local/share/lomiri-xdisp";
 
 char const introspection_xml[] = R"XML(
 <node>
@@ -58,6 +58,7 @@ char const introspection_xml[] = R"XML(
 struct Candidate
 {
     int fd{-1};
+    bool usable{};
     std::string devnode;
     std::string identity;
     uint32_t connector{};
@@ -65,8 +66,8 @@ struct Candidate
 
     Candidate() = default;
     Candidate(Candidate&& other) noexcept :
-        fd{other.fd}, devnode{std::move(other.devnode)}, identity{std::move(other.identity)}, connector{other.connector},
-        device_number{other.device_number}
+        fd{other.fd}, usable{other.usable}, devnode{std::move(other.devnode)}, identity{std::move(other.identity)},
+        connector{other.connector}, device_number{other.device_number}
     {
         other.fd = -1;
     }
@@ -77,6 +78,7 @@ struct Candidate
             if (fd >= 0)
                 close(fd);
             fd = other.fd;
+            usable = other.usable;
             devnode = std::move(other.devnode);
             identity = std::move(other.identity);
             connector = other.connector;
@@ -88,7 +90,7 @@ struct Candidate
     ~Candidate() { if (fd >= 0) close(fd); }
     Candidate(Candidate const&) = delete;
     Candidate& operator=(Candidate const&) = delete;
-    explicit operator bool() const { return fd >= 0; }
+    explicit operator bool() const { return usable; }
 };
 
 bool exists(std::string const& path)
@@ -181,6 +183,10 @@ Candidate probe(udev_device* device)
     result.device_number = udev_device_get_devnum(device);
     auto const* syspath = udev_device_get_syspath(device);
     result.identity = syspath ? syspath : devnode;
+    result.usable = true;
+    drmDropMaster(result.fd);
+    close(result.fd);
+    result.fd = -1;
     return result;
 }
 
@@ -635,7 +641,12 @@ private:
                 self.lifecycle.poison("mirgud reported an unsafe GUD transport failure");
             }
         }
-        return (condition & (G_IO_HUP | G_IO_ERR)) ? FALSE : TRUE;
+        if (condition & (G_IO_HUP | G_IO_ERR))
+        {
+            self.status_watch = 0;
+            return FALSE;
+        }
+        return TRUE;
     }
 
     static void child_exit(GPid pid, gint status, gpointer data)

@@ -243,6 +243,13 @@ identity; merely restarting the daemon, adding another DRM card, or calling
 `Activate` cannot clear poison. `ClearPoison` returns only to `disabled` and
 never activates automatically.
 
+Ubuntu Touch mounts the system partition read-only, so `/var/lib` is not a
+writable service-state location on this phone. The service creates root-owned
+mode-`0700` state under the persistent writable user-data partition at
+`/home/phablet/.local/share/lomiri-xdisp/`. The enabled and poison markers live
+there; binaries, systemd units, and D-Bus policy remain on the read-only system
+partition.
+
 The dormant platform POC no longer scans GUD or exposes a synthetic output.
 Normal Android primary/external compositor policy remains enabled. This leaves
 the dedicated daemon as the sole GUD lifecycle owner without changing the E1
@@ -281,8 +288,11 @@ The receiver uses SSH password authentication with user `cristian`. The
 password is intentionally not tracked in this repository. On this development
 host it is stored in `~/.config/linux-mobile-xdisp/pi.env`, outside all three
 project repositories, with file mode `0600`. That local file defines
-`PI_USER` and `PI_PASSWORD` and is the durable credential source for future
-hardware sessions.
+`PI_USER`, `PI_PASSWORD`, `PHONE_USER`, `PHONE_HOST`, and
+`PHONE_SUDO_PASSWORD` and is the durable credential source for future hardware
+sessions. Future agents must load this file rather than asking again for the
+Pi password or phone sudo credential. The credential values must not be copied
+into tracked files, command lines, or evidence logs.
 
 The Pi address is dynamic and must be established from the current network or
 known receiver address; do not treat an old address as device identity. This
@@ -316,13 +326,106 @@ is a pre-activation hardware block, not an E2.1 lifecycle failure.
 
 ## E2.2 reconnect matrix
 
-Pending implementation and fresh-safe-receiver hardware runs.
+### Native activation gate (2026-07-29)
+
+After a physical USB data replug, the phone enumerated a fresh high-speed GUD
+generation at `1-1.2:1.0`. The capped `gud_xdisp_lz4_12800` driver created
+dynamic `/dev/dri/card1`; `xdispd` discovered its full sysfs identity and
+connector 25 without using fixed card numbering. The Pi receiver started a
+fresh PID 944 with zero counted restarts, FunctionFS mounted, its bulk endpoint
+open, UDC `configured`, and no poisoned, short, invalid, or in-flight receive.
+
+The service was installed and started in `disabled` state. It reported card1
+and connector 25 with child PID zero while system Mir kept `Virtual`
+disconnected. `Enable` then produced `available` with no child or output,
+proving that enable intent is distinct from activation.
+
+The first activation attempt was safely contained before pixel transport:
+`mirgud` selected the exact mode but its initial atomic commit returned
+`EACCES`. The daemon entered `recoverable_error`, reaped the child, and left
+Virtual disconnected. Root cause was the daemon retaining DRM master through
+its discovery fd. Discovery now stores only verified identity metadata, drops
+master, and closes the probe fd before activation.
+
+The corrected activation passed:
+
+- one managed child, PID 46112;
+- `available -> connecting -> active` after the first committed live frame;
+- Virtual connected/used at `1280x720+1080+0`;
+- top-down CPU-owned RGB565 frames and the existing latest-frame presenter;
+- flat 17 child FDs in sampled reports;
+- zero conversion and GUD-submission failures;
+- actual capped frame payload maximum observed at 12,793 bytes;
+- every sampled Pi payload completed in one FunctionFS read and returned to
+  Idle, with no poison, short read, or service restart.
+
+Native `Deactivate` returned the daemon to `available`, child PID zero, and
+Virtual disconnected in 2,956 ms; both compositors remained alive. This hit
+the daemon's bounded three-second forced-stop fallback and therefore proves
+contained non-blocking teardown, but not a graceful presenter-worker join.
+That distinction remains open for E2.2 even though phone and receiver state
+were clean after teardown.
+
+### Active detach and recovery
+
+The USB data path was physically unplugged while the native desktop was
+active. The last normal stream sample had 7,216 received frames, 4,189
+presented, 3,025 replaced/dropped, zero conversion failures, zero GUD submit
+failures, and 17 child FDs. At detach the host received protocol `-71`, not
+`-110`; the presenter reported one contained atomic failure as the DRM device
+was removed. `xdispd` moved `active -> disconnecting -> unavailable`, reaped
+the child, retained activation intent, removed card1/connector identity, and
+disconnected Virtual. Lomiri remained usable.
+
+The same physical action accidentally removed Pi power as well as USB data,
+so it is not a valid same-boot Pi replug case. The fresh Pi boot's first
+receiver start failed before UDC bind or host session because vc4 `set_crtc`
+returned `EACCES` during early boot. With no gadget, endpoint owner, payload,
+or poisoned state, one normal `systemctl start gud-userspace.service` after
+boot was the smallest safe recovery. This is recorded as receiver boot timing,
+not an xdisp reconnect pass or failure.
+
+After that fresh receiver became active, the phone enumerated a new high-speed
+GUD generation and recreated card1. Retained xdisp activation intent then
+performed `unavailable -> available -> connecting -> active` automatically,
+with a new managed child and Virtual restored at `1280x720+1080+0`. No LightDM,
+phone service, or session restart was required.
+
+### Ten-cycle matrix
+
+Ten consecutive native `Activate -> active -> Deactivate -> available` cycles
+passed on the fresh receiver instance:
+
+- every cycle dynamically resolved USB `1-1.2`, `/dev/dri/card1`, and connector
+  25;
+- every cycle had exactly one unique managed child and no residual child;
+- every teardown disconnected Virtual and retained both compositors;
+- teardown times ranged from 2,807 to 4,072 ms;
+- zero phone conversion or GUD-submission failures were recorded;
+- no new GUD `-110`, kernel `BUG`, or `Oops` appeared;
+- the phone's maximum actual payload was 12,799 bytes;
+- the Pi recorded 3,206 complete payloads with maximum 12,798 bytes, zero
+  poison/short/invalid/receive-error match, UDC configured, PID 978 active,
+  and zero service restarts.
+
+The matrix proves repeatable bounded containment and activation ownership. The
+2.8-4.1 second teardown distribution confirms the known synchronous Mir
+release often reaches the forced-stop deadline, so graceful join remains an
+explicit lifecycle limitation rather than being claimed as passed.
 
 ## E2.3 Lomiri UX
 
-E1 directly established an upright, correctly proportioned and colored usable
-HDMI image and confirmed that the phone operated as Lomiri's Virtual Touchpad.
-The complete E2 interaction matrix remains pending.
+**Core UX result: pass.** During native xdisp activation, direct observation
+confirmed Virtual Touchpad mode, usable pointer motion, tap/click, two-finger
+scrolling, launcher operation, application switching, and sensible external
+window/dialog placement. The HDMI desktop remained upright, correctly colored
+and proportioned. Normal `Deactivate` and active USB detach both disconnected
+Virtual and returned the phone from touchpad mode without restarting Lomiri.
+
+Lock/unlock, rotation changes, and application-specific placement were not
+exhaustively tested. The existing System Settings `External display` switch
+continues to report Aethercast/Miracast state by design and does not represent
+GUD; E2.0 established that reusing it would be misleading.
 
 ## E2.4 reproducible capped transport
 

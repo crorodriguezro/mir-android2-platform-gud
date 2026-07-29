@@ -394,7 +394,8 @@ public:
             source.pixels.size() != static_cast<std::size_t>(width) * height)
             throw std::runtime_error{"screencast frame does not match the selected GUD mode"};
         auto const update = ++update_sequence;
-        std::cerr << "mirgud: V0.1 update " << update << " begin" << std::endl;
+        if (!managed_mode)
+            std::cerr << "mirgud: V0.1 update " << update << " begin" << std::endl;
         auto& frame = frames[next];
         for (uint32_t y = 0; y != height; ++y)
         {
@@ -406,7 +407,8 @@ public:
         try
         {
             commit(frame, false);
-            std::cerr << "mirgud: V0.1 update " << update << " complete" << std::endl;
+            if (!managed_mode)
+                std::cerr << "mirgud: V0.1 update " << update << " complete" << std::endl;
         }
         catch (std::system_error const& error)
         {

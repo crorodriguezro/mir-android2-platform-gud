@@ -7,9 +7,9 @@ Wants=lightdm.service
 Type=dbus
 BusName=org.lomiri.XDisp
 ExecStart=/usr/libexec/lomiri-xdisp/xdispd
+ExecStartPre=/usr/bin/install -d -m 0700 /home/phablet/.local/share/lomiri-xdisp
 Environment=MIR_CLIENT_PLATFORM_PATH=/usr/lib/aarch64-linux-gnu/mir1/client-platform
 Environment=MIR_SERVER_PLATFORM_PATH=/usr/lib/aarch64-linux-gnu/mir1/server-platform
-StateDirectory=xdisp
 Restart=on-failure
 KillMode=control-group
 
