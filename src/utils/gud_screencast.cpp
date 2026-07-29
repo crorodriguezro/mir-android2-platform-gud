@@ -48,12 +48,14 @@
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/prctl.h>
+#include <time.h>
 #include <unistd.h>
 
 namespace po = boost::program_options;
 namespace
 {
 std::atomic<bool> running;
+volatile sig_atomic_t stop_signal_received{};
 bool managed_mode{};
 int managed_status_fd{-1};
 
@@ -68,7 +70,10 @@ void managed_status(char const* value)
 {
     if (!managed_mode || managed_status_fd < 0)
         return;
-    auto const message = std::string{"XDISP1 "} + value + "\n";
+    timespec now{};
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    auto const milliseconds = static_cast<uint64_t>(now.tv_sec) * 1000 + now.tv_nsec / 1000000;
+    auto const message = std::string{"XDISP1 "} + std::to_string(milliseconds) + " " + value + "\n";
     auto const ignored = write(managed_status_fd, message.data(), message.size());
     (void)ignored;
 }
@@ -92,7 +97,12 @@ struct Stats
 
 void stop(int)
 {
-    running = false;
+    stop_signal_received = 1;
+}
+
+bool keep_running()
+{
+    return running && !stop_signal_received;
 }
 
 std::system_error system_error(char const* action)
@@ -350,7 +360,9 @@ public:
 
     ~GudKms()
     {
+        managed_status("KMS_TEARDOWN_BEGIN");
         teardown();
+        managed_status("KMS_TEARDOWN_COMPLETE");
     }
 
     void setup()
@@ -904,8 +916,13 @@ try
     if (managed_mode)
         prctl(PR_SET_PDEATHSIG, SIGTERM);
     running = true;
-    signal(SIGINT, stop);
-    signal(SIGTERM, stop);
+    stop_signal_received = 0;
+    struct sigaction action{};
+    action.sa_handler = stop;
+    sigemptyset(&action.sa_mask);
+    action.sa_flags = 0;
+    sigaction(SIGINT, &action, nullptr);
+    sigaction(SIGTERM, &action, nullptr);
     std::unique_ptr<GudKms> kms;
     if (no_gud)
         std::cerr << "mirgud: GUD disabled for source-only stability probe" << std::endl;
@@ -928,7 +945,7 @@ try
         std::cerr << "mirgud: Stage A checkerboard started; verify it on HDMI before Stage B" << std::endl;
         auto const frame = Frame{width, height, mirgud::checkerboard_rgb565(width, height)};
         auto next_report = std::chrono::steady_clock::now();
-        while (running)
+        while (keep_running())
         {
             presenter.submit(frame);
             std::this_thread::sleep_for(std::chrono::seconds{1});
@@ -945,7 +962,14 @@ try
 
     auto const connection = mir::raii::deleter_for(mir_connect_sync(socket.empty() ? nullptr : socket.c_str(),
         source_mode == "extend" ? "aethercast screencast client" : "mirgud"),
-        [](MirConnection* value) { if (value) mir_connection_release(value); });
+        [](MirConnection* value) {
+            if (value)
+            {
+                managed_status("MIR_CONNECTION_RELEASE_BEGIN");
+                mir_connection_release(value);
+                managed_status("MIR_CONNECTION_RELEASE_COMPLETE");
+            }
+        });
     if (!connection || !mir_connection_is_valid(connection.get()))
         throw std::runtime_error{"cannot connect to Mir for virtual/screencast capture"};
     auto const display_configuration = mir::raii::deleter_for(
@@ -983,7 +1007,14 @@ try
         mir_screencast_spec_set_number_of_buffers(spec, 2);
     }
     auto const screencast = mir::raii::deleter_for(mir_screencast_create_sync(spec),
-        [](MirScreencast* value) { if (value) mir_screencast_release_sync(value); });
+        [](MirScreencast* value) {
+            if (value)
+            {
+                managed_status("SCREENCAST_RELEASE_BEGIN");
+                mir_screencast_release_sync(value);
+                managed_status("SCREENCAST_RELEASE_COMPLETE");
+            }
+        });
     mir_screencast_spec_release(spec);
     if (!screencast)
         throw std::runtime_error{"cannot create the Mir virtual/screencast stream"};
@@ -1002,7 +1033,7 @@ try
         std::cerr << "mirgud: xdisp extend hold active; preserving the Aethercast-compatible screencast lifetime"
             << std::endl;
         auto next_report = std::chrono::steady_clock::now();
-        while (running)
+        while (keep_running())
         {
             std::this_thread::sleep_for(std::chrono::milliseconds{100});
             if (std::chrono::steady_clock::now() >= next_report)
@@ -1041,7 +1072,7 @@ try
         uint64_t prior_fingerprint{};
         bool have_prior_fingerprint{};
         uint64_t frame_number{};
-        while (running)
+        while (keep_running())
         {
             auto const start = std::chrono::steady_clock::now();
             try
@@ -1085,7 +1116,7 @@ try
         uint64_t prior_fingerprint{};
         bool have_prior_fingerprint{};
         uint64_t frame_number{};
-        while (running)
+        while (keep_running())
         {
             auto const start = std::chrono::steady_clock::now();
             auto frame = capture.next();
@@ -1114,8 +1145,14 @@ try
             std::this_thread::sleep_until(start + std::chrono::milliseconds{16 * capture_interval});
         }
     }
+    if (stop_signal_received)
+        managed_status("TERM_OBSERVED");
+    managed_status("CAPTURE_LOOP_EXIT");
+    managed_status("PRESENTER_STOP_BEGIN");
     presenter.stop();
+    managed_status("PRESENTER_STOP_COMPLETE");
     presenter.rethrow_failure();
+    managed_status("PROCESS_EXIT");
     return EXIT_SUCCESS;
 }
 catch (std::exception const& error)
