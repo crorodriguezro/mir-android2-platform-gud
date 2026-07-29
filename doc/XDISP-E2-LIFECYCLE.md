@@ -275,6 +275,33 @@ Final artifacts were staged, but not installed or run, as:
 
 ### Hardware gate (2026-07-29)
 
+#### Pi SSH authentication
+
+The receiver uses SSH password authentication with user `cristian`. The
+password is intentionally not tracked in this repository. On this development
+host it is stored in `~/.config/linux-mobile-xdisp/pi.env`, outside all three
+project repositories, with file mode `0600`. That local file defines
+`PI_USER` and `PI_PASSWORD` and is the durable credential source for future
+hardware sessions.
+
+The Pi address is dynamic and must be established from the current network or
+known receiver address; do not treat an old address as device identity. This
+host does not have `sshpass`, so noninteractive automation loads the local env
+file and uses Python `pexpect` to invoke normal `ssh` or `scp`, accept a new
+host key only when explicitly expected, and answer the password prompt. Never
+place the password on a shell command line, in a tracked script, in evidence
+logs, or in this document. Interactive access remains ordinary:
+
+```bash
+ssh cristian@<current-pi-address>
+```
+
+Before every payload-producing test, use that access only for read-only
+preflight: verify `gud-userspace.service`, its PID/restart/result properties,
+FunctionFS mount/endpoints, UDC state, and absence of `Poisoned`, short, or
+invalid receive records. A poisoned receiver remains a terminal stop and must
+not be restarted through SSH.
+
 The mandatory phone-side enumeration scan found the receiver dynamically at
 `/sys/bus/usb/devices/1-1.2` with `1d50:614d`. The `gud` module name was loaded,
 but only MSM `/dev/dri/card0` existed; there was no current GUD DRM card. The
