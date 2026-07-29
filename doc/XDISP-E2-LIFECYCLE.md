@@ -423,6 +423,32 @@ The matrix proves repeatable bounded containment and activation ownership. The
 release often reaches the forced-stop deadline, so graceful join remains an
 explicit lifecycle limitation rather than being claimed as passed.
 
+### Teardown boundary follow-up (2026-07-29)
+
+A controlled one-cycle probe added monotonic managed-child milestones around
+the existing shutdown path. It observed `TERM_OBSERVED`, `CAPTURE_LOOP_EXIT`,
+`PRESENTER_STOP_COMPLETE`, and `SCREENCAST_RELEASE_COMPLETE` within 155 ms of
+the request. The final `MIR_CONNECTION_RELEASE_BEGIN` was then followed by no
+completion before xdispd's 3-second containment deadline; the daemon recorded
+`forced-sigkill:signal:9` after 3,459 ms. This excludes the capture loop,
+in-flight GUD presenter, KMS teardown, and synchronous screencast release as
+the routine blocking boundary.
+
+The matching Mir 1.8 client implementation makes `mir_connection_release()`
+call `MirConnection::disconnect()` and wait without a timeout for the server
+Disconnect reply. A signalfd-based probe that prevented SIGTERM from
+interrupting any Mir client thread reproduced the same wait, so asynchronous
+signal delivery is not the cause. That probe was not retained: its test binary
+was replaced with the verified prior artifact, xdisp was restarted to
+`available`, and the Ubuntu Touch system partition was remounted read-only.
+
+No shutdown workaround was committed. In particular, xdisp must not turn an
+unanswered Mir Disconnect request into an untracked process exit or silently
+skip connection ownership release. The remaining graceful-stop fix belongs at
+the installed Mir client/server Disconnect boundary (or needs a supported,
+bounded client API there), rather than in GUD transport or the frame
+presenter.
+
 ## E2.3 Lomiri UX
 
 **Core UX result: pass.** During native xdisp activation, direct observation
