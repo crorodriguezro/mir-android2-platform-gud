@@ -1,4 +1,5 @@
 #include "lifecycle.h"
+#include "child_termination.h"
 
 #include <gio/gio.h>
 #include <glib-unix.h>
@@ -11,6 +12,7 @@
 #include <csignal>
 #include <cstdint>
 #include <cstring>
+#include <chrono>
 #include <fstream>
 #include <memory>
 #include <spawn.h>
@@ -49,6 +51,10 @@ char const introspection_xml[] = R"XML(
     <property name="ChildPid" type="u" access="read"/>
     <property name="LastError" type="s" access="read"/>
     <property name="RecoveryObserved" type="b" access="read"/>
+    <property name="LastChildExit" type="s" access="read"/>
+    <property name="LastStopForced" type="b" access="read"/>
+    <property name="ForcedStopCount" type="t" access="read"/>
+    <property name="LastStopDurationMs" type="t" access="read"/>
     <signal name="StateChanged">
       <arg name="old_state" type="s"/><arg name="new_state" type="s"/><arg name="reason" type="s"/>
     </signal>
@@ -386,6 +392,10 @@ private:
         if (!std::strcmp(property, "ChildPid")) return g_variant_new_uint32(self.child_pid > 0 ? self.child_pid : 0);
         if (!std::strcmp(property, "LastError")) return g_variant_new_string(self.last_error.c_str());
         if (!std::strcmp(property, "RecoveryObserved")) return g_variant_new_boolean(self.lifecycle.recovery_observed());
+        if (!std::strcmp(property, "LastChildExit")) return g_variant_new_string(self.stop_diagnostics.last_child_exit().c_str());
+        if (!std::strcmp(property, "LastStopForced")) return g_variant_new_boolean(self.stop_diagnostics.last_stop_forced());
+        if (!std::strcmp(property, "ForcedStopCount")) return g_variant_new_uint64(self.stop_diagnostics.forced_stop_count());
+        if (!std::strcmp(property, "LastStopDurationMs")) return g_variant_new_uint64(self.stop_diagnostics.last_stop_duration_ms());
         return nullptr;
     }
 
@@ -414,6 +424,10 @@ private:
         g_variant_builder_add(&changed, "{sv}", "ChildPid", g_variant_new_uint32(child_pid > 0 ? child_pid : 0));
         g_variant_builder_add(&changed, "{sv}", "LastError", g_variant_new_string(last_error.c_str()));
         g_variant_builder_add(&changed, "{sv}", "RecoveryObserved", g_variant_new_boolean(lifecycle.recovery_observed()));
+        g_variant_builder_add(&changed, "{sv}", "LastChildExit", g_variant_new_string(stop_diagnostics.last_child_exit().c_str()));
+        g_variant_builder_add(&changed, "{sv}", "LastStopForced", g_variant_new_boolean(stop_diagnostics.last_stop_forced()));
+        g_variant_builder_add(&changed, "{sv}", "ForcedStopCount", g_variant_new_uint64(stop_diagnostics.forced_stop_count()));
+        g_variant_builder_add(&changed, "{sv}", "LastStopDurationMs", g_variant_new_uint64(stop_diagnostics.last_stop_duration_ms()));
         GVariantBuilder invalidated;
         g_variant_builder_init(&invalidated, G_VARIANT_TYPE("as"));
         g_dbus_connection_emit_signal(connection, nullptr, object_path, "org.freedesktop.DBus.Properties",
@@ -574,6 +588,7 @@ private:
         if (!action_result && status_pipe[1] != 3 && status_pipe[1] != 4)
             action_result = posix_spawn_file_actions_addclose(&actions, status_pipe[1]);
         stop_requested = false;
+        forced_kill_requested = false;
         int const spawn_result = action_result ? action_result :
             posix_spawn(&child_pid, XDISP_MIRGUD_PATH, &actions, nullptr, arguments, environ);
         if (actions_initialized)
@@ -607,13 +622,23 @@ private:
         if (child_pid <= 0)
             return;
         stop_requested = true;
+        if (!stop_started)
+        {
+            stop_started = true;
+            stop_started_at = std::chrono::steady_clock::now();
+            g_message("xdispd: teardown stop requested");
+        }
         kill(child_pid, SIGTERM);
         if (!kill_source)
             kill_source = g_timeout_add_seconds(3, [](gpointer data) -> gboolean {
                 auto& self = *static_cast<Daemon*>(data);
                 self.kill_source = 0;
                 if (self.child_pid > 0)
+                {
+                    self.forced_kill_requested = true;
+                    g_warning("xdispd: teardown deadline reached; sending SIGKILL");
                     kill(self.child_pid, SIGKILL);
+                }
                 return FALSE;
             }, this);
     }
@@ -630,12 +655,13 @@ private:
                 break;
             std::string const message{line, length};
             g_free(line);
-            if (message == "XDISP1 ACTIVE\n")
+            g_message("xdispd: child milestone: %s", message.substr(0, message.find_last_not_of("\r\n") + 1).c_str());
+            if (message.find(" ACTIVE\n") != std::string::npos)
             {
                 if (self.activation_source) { g_source_remove(self.activation_source); self.activation_source = 0; }
                 self.lifecycle.child_active();
             }
-            else if (message == "XDISP1 FATAL P\n")
+            else if (message.find(" FATAL P\n") != std::string::npos)
             {
                 self.poisoned_identity = self.candidate.identity;
                 self.lifecycle.poison("mirgud reported an unsafe GUD transport failure");
@@ -659,16 +685,24 @@ private:
         self.child_watch = 0;
         if (self.status_watch) { g_source_remove(self.status_watch); self.status_watch = 0; }
         if (self.status_channel) { g_io_channel_unref(self.status_channel); self.status_channel = nullptr; }
-        int code = WIFEXITED(status) ? WEXITSTATUS(status) : 21;
-        xdisp::ChildResult result = code == 0 ? xdisp::ChildResult::stopped :
-            (code == 20 ? xdisp::ChildResult::unavailable :
-            (code == 22 ? xdisp::ChildResult::poisoned_transport : xdisp::ChildResult::recoverable_error));
-        if (self.stop_requested && result != xdisp::ChildResult::poisoned_transport)
-            result = xdisp::ChildResult::stopped;
+        auto const termination = xdisp::classify_child_termination(
+            status, self.stop_requested, self.forced_kill_requested);
+        self.stop_diagnostics.child_exited(termination);
+        uint64_t stop_duration_ms{};
+        if (self.stop_started)
+        {
+            stop_duration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - self.stop_started_at).count();
+            self.stop_diagnostics.stop_completed(termination, stop_duration_ms);
+        }
+        g_message("xdispd: child exit %s stop_duration_ms=%llu", termination.description.c_str(),
+            static_cast<unsigned long long>(stop_duration_ms));
         self.stop_requested = false;
-        if (result == xdisp::ChildResult::poisoned_transport)
+        self.forced_kill_requested = false;
+        self.stop_started = false;
+        if (termination.result == xdisp::ChildResult::poisoned_transport)
             self.poisoned_identity = self.candidate.identity;
-        self.lifecycle.child_exited(result, "mirgud exited with status " + std::to_string(code));
+        self.lifecycle.child_exited(termination.result, termination.description);
         self.emit_properties();
         if (self.shutting_down && self.loop)
             g_main_loop_quit(self.loop);
@@ -680,6 +714,7 @@ private:
     xdisp::Lifecycle lifecycle;
     std::string last_error;
     std::string poisoned_identity;
+    xdisp::StopDiagnostics stop_diagnostics;
     GMainLoop* loop{};
     GDBusConnection* connection{};
     GDBusNodeInfo* node{};
@@ -696,6 +731,9 @@ private:
     GIOChannel* status_channel{};
     bool shutting_down{};
     bool stop_requested{};
+    bool forced_kill_requested{};
+    bool stop_started{};
+    std::chrono::steady_clock::time_point stop_started_at{};
     bool poison_remove_observed{};
 };
 }

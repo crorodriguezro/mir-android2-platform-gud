@@ -59,6 +59,19 @@ TEST(XdispLifecycle, normal_deactivation_joins_before_available)
     EXPECT_EQ(xdisp::State::available, h.lifecycle.state());
 }
 
+TEST(XdispLifecycle, contained_forced_stop_returns_to_available)
+{
+    Harness h{true};
+    h.lifecycle.sink_added();
+    h.lifecycle.activate();
+    h.lifecycle.child_active();
+    h.lifecycle.deactivate();
+
+    h.lifecycle.child_exited(xdisp::ChildResult::stopped, "forced-sigkill:signal:9");
+
+    EXPECT_EQ(xdisp::State::available, h.lifecycle.state());
+}
+
 TEST(XdispLifecycle, detach_retains_intent_and_reconnects_only_after_fresh_add)
 {
     Harness h{true};

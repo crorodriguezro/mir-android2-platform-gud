@@ -1,4 +1,4 @@
-add_executable(xdispd xdispd.cpp lifecycle.cpp)
+add_executable(xdispd xdispd.cpp lifecycle.cpp child_termination.cpp)
 target_include_directories(xdispd PRIVATE SYSTEM
   ${GIO_INCLUDE_DIRS}
   ${UDEV_INCLUDE_DIRS}

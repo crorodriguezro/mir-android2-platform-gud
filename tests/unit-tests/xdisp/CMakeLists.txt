@@ -1,6 +1,8 @@
 mir_add_wrapped_executable(mir_unit_tests_xdisp NOINSTALL
   test_lifecycle.cpp
+  test_child_termination.cpp
   ${PROJECT_SOURCE_DIR}/src/xdisp/lifecycle.cpp
+  ${PROJECT_SOURCE_DIR}/src/xdisp/child_termination.cpp
 )
 
 target_include_directories(mir_unit_tests_xdisp PRIVATE ${PROJECT_SOURCE_DIR}/src/xdisp)
