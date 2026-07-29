@@ -277,8 +277,8 @@ Final artifacts were staged, but not installed or run, as:
 
 | Artifact | SHA-256 |
 | --- | --- |
-| `/home/phablet/xdispd-e21-a1d0882.bin` | `a1d08829eddb9d41488d22ece98597a2d8e5b73535478867f55989fc0e258135` |
-| `/home/phablet/mirgud-e21-bbe5bb7.bin` | `bbe5bb7d8addfe1d3b825f494e82b6ee684eabf2f660fa968cc59c2f8f62c73b` |
+| `/home/phablet/xdispd-e22-c35df4d.bin` | `c35df4d8d12fd456b4602d8e9e6114a0b5d0da31e92e2031546e474f268a9bde` |
+| `/home/phablet/mirgud-e22-managed.bin` | `5f74416709518fd787672f7e67c42da053eac6ba71b3d21e62667acef04da4ed` |
 
 ### Hardware gate (2026-07-29)
 
@@ -429,15 +429,127 @@ GUD; E2.0 established that reusing it would be misleading.
 
 ## E2.4 reproducible capped transport
 
-The exact capped-driver source is tracked in the sibling `gud` repository at
-`backport-4.9/variants/xdisp-lz4-12800/`, with build, unit, sanitizer, contract,
-metadata, and explicit staging tooling. E2.4 verification and supported-profile
-classification remain pending until E2.1-E2.3 results are recorded.
+**Supported OnePlus profile: qualified v1 at source commit `2a8f59b`.** The
+normal module remains a separate artifact and is not silently overwritten.
+The current v2 source remains test-only: it contains experimental bounded and
+predictive policies and the safety staging helper intentionally rejects it.
+
+The qualified source and build identity are:
+
+| Item | Value |
+| --- | --- |
+| Repository | sibling `gud` repository |
+| Source commit | `2a8f59ba84120f6b6f821b83a02c4d6a9459b32a` |
+| Source tree | `793dadf199bbb080c02a3807cfca37ad50a4527f` |
+| Commit subject | `gud: add adaptive LZ4 XDISP diagnostic` |
+| Kernel repository | `kernel-oneplus-sdm845.git` |
+| Kernel commit | `6b190d86bd895acf891617e26840b1a85df6602c` |
+| Kernel release | `4.9.112-g6b190d86b` |
+| Architecture | `arm64` |
+| Compiler | `aarch64-redhat-linux-gcc 16.1.1` |
+| Config SHA-256 | `48ee04061346d4b3c5d27fd0874ae285c80c9851807cffac83abfac83680af12` |
+| Module.symvers SHA-256 | `a677333e4c2304f627896533e356cc78886bb74e56f54728fe0849cd1b09a95c` |
+| Module version | `xdisp-p0.1-adaptive-12800-v1` |
+| Module srcversion | `A6C725860B997A5E68AF374` |
+| ELF build ID | `a394e386bb6200ce34b9a2f46111767cdb726c73` |
+| Artifact SHA-256 | `2369eccc5cf3afc7ff8364921b8ce94fec8363518466f727b71d2d009c6c5999` |
+| Phone artifact | `/home/phablet/gud.xdisp-p0.1-adaptive-12800-2a8f59b.ko` |
+| Normal module SHA-256 | `bd15c2c1bc4cd941bcac88bb13276b67620d9e2eec515973ff815add68f3630c` |
+
+The tracked manifest is `backport-4.9/env/target-manifest.env`. From an isolated
+checkout of the exact commit, the reproducible command is:
+
+```bash
+make -C backport-4.9 \
+  MANIFEST=/home/cristianr/Projects/linux-mobile/gud/backport-4.9/env/target-manifest.env \
+  xdisp-lz4-12800
+```
+
+The rebuild completed against the recorded kernel tree and reproduced the
+qualified artifact bit-for-bit: SHA-256, srcversion, vermagic, and ELF build ID
+all match the retained v1 module.
+
+The exact-commit normal and sanitizer suites, contract suite, and staging-tool
+suite all pass. They cover exact 12,800, adjacent 12,799/12,801 limits,
+one-row-over rejection, complete-row source lengths and full-frame coverage,
+640-pixel narrow and 1920-pixel wide rectangles, compressed round trips, raw
+fallback/backoff, red zones, and the adjacent pre-submit hard guard. Current
+v2 planner, sanitizer, and contract tests also pass, while its v1-only staging
+test rejects the v2 module identity as intended.
+
+The real submission path validates `chunk.payload_length <= 12800` immediately
+before constructing `SET_BUFFER` and the bulk URB. It sends compressed length
+only when compression is selected, otherwise source length, and updates the
+maximum-payload diagnostic only after a complete transfer. The default 3,000
+ms host bulk timeout and established retry behavior are unchanged.
+
+Staging uses an explicit commit-qualified path and verifies both local/remote
+diagnostic hashes plus the unchanged normal-module hash without loading either
+artifact:
+
+```bash
+REMOTE_MODULE_PATH=/home/phablet/gud.xdisp-p0.1-adaptive-12800-2a8f59b.ko \
+  backport-4.9/env/stage-xdisp-module.sh
+```
+
+Activation is explicit: unload the internal module name `gud` only from a
+fresh safe receiver state, then `insmod` the qualified path. Never copy it over
+`/home/phablet/gud.ko`; both artifacts intentionally have internal module name
+`gud` and cannot coexist.
+
+Hardware qualification includes the retained v1 10/10 adaptive matrix with
+maximum payload 12,799 and no `-110`, short/impossible/poisoned receive, DWC2
+fault, or reboot. This E2 run independently observed phone maximum 12,799 and
+Pi maximum 12,798 across 3,206 complete matrix payloads. The qualified capped
+variant therefore remains a OnePlus-specific supported profile rather than
+replacing the normal GUD project configuration globally.
 
 ## E2.5 stability
 
-The required unlocked 30-minute interactive run has not started.
+**Result: failed at 88 seconds due to LightDM/system-compositor restart during
+USB HID attachment.** The required 30-minute run did not complete and must not
+be counted as stable.
+
+The unlocked interactive run began at 17:23:20 with native xdisp active. The
+last complete child report at 17:24:47 recorded 2,283 frames received, 564
+presented, 1,717 replaced/dropped, zero conversion failures, zero GUD submit
+failures, and 17 FDs. Temperature sampled at 35.5 C initially and 32.5 C near
+one minute. The phone's maximum capped payload remained 12,799 bytes.
+
+At 17:24:45 a USB2 hub added a Razer Viper mouse plus two keyboard interfaces
+and a HOLDCHIP USB Gaming Keyboard plus two keyboard interfaces. Lomiri logged
+the pointer count change while already in Windowed 1280x720 external mode. At
+17:24:48 it applied the new keymap; immediately afterward the LightDM main
+process exited status 1. LightDM restarted twice, replacing system Mir. The
+managed `mirgud` consequently lost `/run/mir_socket`, exited status 21, and
+`xdispd` entered `recoverable_error` with no child and Virtual disconnected.
+
+There was no GUD transport stop condition during this interval. The Pi
+recorded 1,926 frame payloads, maximum 12,798 bytes, at least 1,928 returns to
+Idle, no short read, poison, invalid receive, receiver error, or service
+restart. The phone recorded no GUD `-110`, conversion failure, or submission
+failure. This separates the failure from Raw GUD transport and attributes the
+test stop to system-compositor/session behavior concurrent with USB HID
+attachment.
+
+After the automatic LightDM recovery, the phone returned to a normal
+single-display greeter. `Deactivate` cleared retained activation intent and
+returned xdisp to `available`; child PID is zero, Virtual is disconnected, and
+the Pi receiver remains active/configured. No manual session restart was added
+beyond LightDM's own two restart attempts.
+
+Do not retry the 30-minute run in this receiver session. The next work is to
+reproduce and diagnose the HID/convergence LightDM exit independently of
+transport, then repeat E2.5 without a compositor restart.
 
 ## Final classification
 
-No final E2 classification is assigned before E2.1-E2.5 complete.
+**Classification: E2-C - RECONNECT OR OWNERSHIP FAILURE.** Native lifecycle
+ownership, activation/deactivation, active USB-detach containment, fresh GUD
+rediscovery, retained-intent reconnect, 10/10 normal cycles, core Virtual
+Touchpad UX, and reproducible capped transport all pass. E2-A is blocked because
+teardown relies on the bounded forced-stop fallback and the required stability
+run ended in a LightDM/system-compositor restart when USB HID devices were
+attached. This is not E2-D: the qualified capped driver is source-reproducible
+and bit-for-bit rebuilt. E2 remains lifecycle/product incomplete; do not begin
+H.264 work.
