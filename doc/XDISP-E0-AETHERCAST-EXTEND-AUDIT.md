@@ -405,10 +405,26 @@ disconnected`, and both `lomiri-system-compositor` and `lomiri` remained alive.
 There was no new diagnostic-module-era GUD `-110`, atomic-update failure,
 `BUG`, `Oops`, binder `-12`, or KGSL `-24` record.
 
-**Current classification: E1 transport/lifecycle integration passed; final
-visual classification is pending direct HDMI observation.** The phone was at
+**Classification at the end of the remote run: E1 transport/lifecycle
+integration passed; final visual classification was pending direct HDMI
+observation.** The phone was at
 the Lomiri greeter during the remote run, and SSH cannot observe the monitor
 or physical-phone external-display UX. Therefore this record does not yet
 claim upright HDMI pixels, colors, application switching, a native landscape
 application window, or Virtual Touchpad behavior. Those direct observations
 must be made from an unlocked session before calling the result E1-A.
+
+## E1 direct visual result (2026-07-29)
+
+**Classification: E1-A — SUCCESS.** Direct observation of the proven E1 path
+confirmed that the HDMI image was upright, its colors and proportions looked
+correct, and application content was usable. The phone operated as Lomiri's
+Virtual Touchpad while the native landscape external desktop was active.
+
+This completes the visual-only gate left open by the remote run. The measured
+result remains 5,864 complete Pi payload receives over 68 seconds, a maximum
+payload of 12,794 bytes, no new GUD `-110`, no short FunctionFS read, no
+poisoned receiver state, no conversion or GUD-submission failure, clean
+Virtual-output teardown, and both compositors alive. The successful transport
+used the separately staged `gud_xdisp_lz4_12800` diagnostic module; making that
+capped variant reproducible remains E2 work.
