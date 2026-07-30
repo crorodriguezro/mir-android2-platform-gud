@@ -1,12 +1,14 @@
 /*
- * XDISP-V0: a deliberately small Mir screencast -> RGB565 -> GUD client.
+ * XDISP-V0: a deliberately small Mir screencast -> pixel format -> GUD client.
  *
  * This is not a graphics-platform output.  Mir owns the screencast stream;
  * this process copies each completed buffer before swapping it back to Mir.
  * The only frames that cross the slow GUD/USB boundary are client-owned
- * RGB565 vectors, bounded to one active and one pending frame.
+ * pixel vectors, bounded to one active and one pending frame.
+ *
+ * Transport format is selectable via --pixel-format (rgb565 or xrgb8888).
  */
-#include "gud_screencast_rgb565.h"
+#include "gud_screencast_format.h"
 
 #include "mir_toolkit/mir_client_library.h"
 #include "mir_toolkit/mir_buffer_stream.h"
@@ -78,13 +80,6 @@ void managed_status(char const* value)
     (void)ignored;
 }
 
-struct Frame
-{
-    uint32_t width{};
-    uint32_t height{};
-    std::vector<uint16_t> pixels;
-};
-
 struct Stats
 {
     uint64_t received{};
@@ -93,6 +88,9 @@ struct Stats
     uint64_t dropped{};
     uint64_t conversion_failures{};
     uint64_t submit_failures{};
+    uint64_t capture_us{};
+    uint64_t conversion_us{};
+    uint64_t submit_us{};
 };
 
 void stop(int)
@@ -149,7 +147,7 @@ class LatestFramePresenter
 {
 public:
     explicit LatestFramePresenter(
-        std::function<void(Frame const&)> present,
+        std::function<void(mirgud::Frame const&)> present,
         std::function<void()> first_presented = {}) :
         present{std::move(present)}, first_presented{std::move(first_presented)}, worker{[this] { work(); }}
     {
@@ -163,9 +161,9 @@ public:
     LatestFramePresenter(LatestFramePresenter const&) = delete;
     LatestFramePresenter& operator=(LatestFramePresenter const&) = delete;
 
-    void submit(Frame frame)
+    void submit(mirgud::Frame frame)
     {
-        auto incoming = std::unique_ptr<Frame>{new Frame{std::move(frame)}};
+        auto incoming = std::unique_ptr<mirgud::Frame>{new mirgud::Frame{std::move(frame)}};
         {
             std::lock_guard<std::mutex> lock{mutex};
             if (stopping)
@@ -184,10 +182,18 @@ public:
         ++statistics.conversion_failures;
     }
 
-    void received()
+    void received(uint64_t capture_us, uint64_t conversion_us)
     {
         std::lock_guard<std::mutex> lock{mutex};
         ++statistics.received;
+        statistics.capture_us += capture_us;
+        statistics.conversion_us += conversion_us;
+    }
+
+    void submit_time(uint64_t us)
+    {
+        std::lock_guard<std::mutex> lock{mutex};
+        statistics.submit_us += us;
     }
 
     Stats stats() const
@@ -226,7 +232,7 @@ private:
     {
         while (true)
         {
-            std::unique_ptr<Frame> frame;
+            std::unique_ptr<mirgud::Frame> frame;
             {
                 std::unique_lock<std::mutex> lock{mutex};
                 wakeup.wait(lock, [this] { return stopping || pending; });
@@ -236,7 +242,11 @@ private:
             }
             try
             {
+                auto const submit_start = std::chrono::steady_clock::now();
                 present(*frame);
+                auto const submit_end = std::chrono::steady_clock::now();
+                submit_time(static_cast<uint64_t>(
+                    std::chrono::duration_cast<std::chrono::microseconds>(submit_end - submit_start).count()));
                 std::lock_guard<std::mutex> lock{mutex};
                 ++statistics.presented;
                 if (statistics.presented == 1 && first_presented)
@@ -257,11 +267,11 @@ private:
         }
     }
 
-    std::function<void(Frame const&)> present;
+    std::function<void(mirgud::Frame const&)> present;
     std::function<void()> first_presented;
     mutable std::mutex mutex;
     std::condition_variable wakeup;
-    std::unique_ptr<Frame> pending;
+    std::unique_ptr<mirgud::Frame> pending;
     Stats statistics;
     std::exception_ptr presentation_failure;
     bool stopping{};
@@ -333,8 +343,10 @@ struct Properties
 class GudKms
 {
 public:
-    GudKms(uint32_t required_width, uint32_t required_height, int inherited_fd = -1, uint32_t required_connector = 0) :
-        required_width{required_width}, required_height{required_height}, required_connector{required_connector}
+    GudKms(uint32_t required_width, uint32_t required_height, mirgud::PixelFormat pixel_format,
+           int inherited_fd = -1, uint32_t required_connector = 0) :
+        required_width{required_width}, required_height{required_height},
+        pixel_format{pixel_format}, required_connector{required_connector}
     {
         fd = inherited_fd >= 0 ? inherited_fd : open_gud_card();
         if (fd < 0)
@@ -398,23 +410,24 @@ public:
         }
     }
 
-    void present(Frame const& source)
+    void present(mirgud::Frame const& source)
     {
         if (!initial_modeset_complete)
             throw std::logic_error{"GUD update attempted before the initial modeset"};
         if (source.width != width || source.height != height ||
-            source.pixels.size() != static_cast<std::size_t>(width) * height)
+            source.pixels.size() != static_cast<std::size_t>(width) * height * mirgud::bytes_per_pixel(pixel_format))
             throw std::runtime_error{"screencast frame does not match the selected GUD mode"};
         auto const update = ++update_sequence;
         if (!managed_mode)
             std::cerr << "mirgud: V0.1 update " << update << " begin" << std::endl;
         auto& frame = frames[next];
+        auto const bpp = mirgud::bytes_per_pixel(pixel_format);
         for (uint32_t y = 0; y != height; ++y)
         {
-            auto const* const source_row = source.pixels.data() + static_cast<std::size_t>(y) * width;
-            auto* const destination_row = static_cast<uint16_t*>(frame.map) +
-                static_cast<std::size_t>(y) * frame.dumb.pitch / sizeof(uint16_t);
-            std::memcpy(destination_row, source_row, static_cast<std::size_t>(width) * sizeof(uint16_t));
+            auto const* const source_row = source.pixels.data() + static_cast<std::size_t>(y) * width * bpp;
+            auto* const destination_row = static_cast<uint8_t*>(frame.map) +
+                static_cast<std::size_t>(y) * frame.dumb.pitch;
+            std::memcpy(destination_row, source_row, static_cast<std::size_t>(width) * bpp);
         }
         try
         {
@@ -506,14 +519,15 @@ private:
             throw system_error("cannot create GUD mode blob");
         width = required_width;
         height = required_height;
-        std::cerr << "mirgud: GUD enabled at " << width << "x" << height << " RGB565" << std::endl;
+        std::cerr << "mirgud: GUD enabled at " << width << "x" << height << " " <<
+            mirgud::format_name(pixel_format) << std::endl;
     }
 
     void allocate(KmsFrame& frame)
     {
         frame.dumb.width = width;
         frame.dumb.height = height;
-        frame.dumb.bpp = 16;
+        frame.dumb.bpp = mirgud::bytes_per_pixel(pixel_format) * 8;
         if (drmIoctl(fd, DRM_IOCTL_MODE_CREATE_DUMB, &frame.dumb))
             throw system_error("GUD dumb allocation failed");
         drm_mode_map_dumb mapping{};
@@ -524,9 +538,9 @@ private:
         uint32_t handles[] = {frame.dumb.handle, 0, 0, 0};
         uint32_t pitches[] = {frame.dumb.pitch, 0, 0, 0};
         uint32_t offsets[] = {0, 0, 0, 0};
-        if (frame.map == MAP_FAILED || drmModeAddFB2(fd, width, height, DRM_FORMAT_RGB565,
+        if (frame.map == MAP_FAILED || drmModeAddFB2(fd, width, height, mirgud::drm_format(pixel_format),
             handles, pitches, offsets, &frame.framebuffer, 0))
-            throw system_error("GUD RGB565 framebuffer allocation failed");
+            throw system_error("GUD framebuffer allocation failed");
     }
 
     void commit(KmsFrame const& frame, bool modeset)
@@ -582,6 +596,7 @@ private:
 
     uint32_t required_width;
     uint32_t required_height;
+    mirgud::PixelFormat pixel_format;
     uint32_t required_connector;
     int fd{-1};
     uint32_t connector{}, crtc{}, plane{}, mode_blob{}, width{}, height{}, next{};
@@ -651,9 +666,8 @@ void log_topology(char const* phase, MirDisplayConfig const& config)
     }
 }
 
-uint64_t sampled_fingerprint(Frame const& frame)
+uint64_t sampled_fingerprint(mirgud::Frame const& frame)
 {
-    /* Fixed small sample: enough to distinguish frames without hashing a full frame. */
     uint64_t hash{1469598103934665603ULL};
     auto const samples = std::min<std::size_t>(256, frame.pixels.size());
     if (!samples)
@@ -667,25 +681,39 @@ uint64_t sampled_fingerprint(Frame const& frame)
     return hash;
 }
 
-void write_ppm(Frame const& frame, std::string const& path)
+void write_ppm(mirgud::Frame const& frame, std::string const& path)
 {
-    if (frame.width == 0 || frame.height == 0 ||
-        frame.pixels.size() != static_cast<std::size_t>(frame.width) * frame.height)
-        throw std::runtime_error{"cannot dump an invalid RGB565 frame"};
+    if (frame.width == 0 || frame.height == 0)
+        throw std::runtime_error{"cannot dump an invalid frame"};
 
     std::ofstream output{path, std::ios::binary | std::ios::trunc};
     if (!output)
         throw std::runtime_error{"cannot open frame dump " + path};
     output << "P6\n" << frame.width << " " << frame.height << "\n255\n";
-    for (auto const pixel : frame.pixels)
-    {
-        auto const r = static_cast<char>(((pixel >> 11) & 0x1f) * 255 / 31);
-        auto const g = static_cast<char>(((pixel >> 5) & 0x3f) * 255 / 63);
-        auto const b = static_cast<char>((pixel & 0x1f) * 255 / 31);
-        output.write(&r, 1);
-        output.write(&g, 1);
-        output.write(&b, 1);
-    }
+    auto const bpp = mirgud::bytes_per_pixel(frame.format);
+    for (uint32_t y = 0; y != frame.height; ++y)
+        for (uint32_t x = 0; x != frame.width; ++x)
+        {
+            auto const offset = (static_cast<std::size_t>(y) * frame.width + x) * bpp;
+            uint8_t r, g, b;
+            if (frame.format == mirgud::PixelFormat::rgb565)
+            {
+                auto const pixel = *reinterpret_cast<uint16_t const*>(&frame.pixels[offset]);
+                r = static_cast<uint8_t>(((pixel >> 11) & 0x1f) * 255 / 31);
+                g = static_cast<uint8_t>(((pixel >> 5) & 0x3f) * 255 / 63);
+                b = static_cast<uint8_t>((pixel & 0x1f) * 255 / 31);
+            }
+            else
+            {
+                auto const pixel = *reinterpret_cast<uint32_t const*>(&frame.pixels[offset]);
+                r = static_cast<uint8_t>((pixel >> 16) & 0xff);
+                g = static_cast<uint8_t>((pixel >> 8) & 0xff);
+                b = static_cast<uint8_t>(pixel & 0xff);
+            }
+            output.write(reinterpret_cast<char const*>(&r), 1);
+            output.write(reinterpret_cast<char const*>(&g), 1);
+            output.write(reinterpret_cast<char const*>(&b), 1);
+        }
     if (!output)
         throw std::runtime_error{"cannot write frame dump " + path};
 }
@@ -702,35 +730,44 @@ MirGraphicsRegion graphics_region(MirBufferStream* stream)
 class DirectCapture
 {
 public:
-    DirectCapture(MirBufferStream* stream, mirgud::RowOrder row_order) : stream{stream}, row_order{row_order}
+    DirectCapture(MirBufferStream* stream, mirgud::PixelFormat pixel_format, mirgud::RowOrder row_order) :
+        stream{stream}, pixel_format{pixel_format}, row_order{row_order}
     {
         auto const region = graphics_region(stream);
         if (region.width <= 0 || region.height <= 0 || region.stride <= 0)
             throw std::runtime_error{"invalid CPU screencast graphics region"};
         std::cerr << "mirgud: virtual frame source is CPU mapped " << region.width << "x" << region.height <<
             " format=" << static_cast<int>(region.pixel_format) << " stride=" << region.stride <<
-            " row_order=" << (row_order == mirgud::RowOrder::top_down ? "top-down" : "bottom-up") << std::endl;
+            " row_order=" << (row_order == mirgud::RowOrder::top_down ? "top-down" : "bottom-up") <<
+            " transport=" << mirgud::format_name(pixel_format) << std::endl;
     }
 
-    Frame next()
+    mirgud::Frame next(uint64_t* capture_us, uint64_t* conversion_us)
     {
+        auto const capture_start = std::chrono::steady_clock::now();
         auto const region = graphics_region(stream);
         if (region.width <= 0 || region.height <= 0 || region.stride <= 0)
             throw std::runtime_error{"invalid CPU screencast graphics region"};
-        Frame frame{static_cast<uint32_t>(region.width), static_cast<uint32_t>(region.height),
-            std::vector<uint16_t>(static_cast<std::size_t>(region.width) * region.height)};
+        auto const conversion_start = std::chrono::steady_clock::now();
+        mirgud::Frame frame{static_cast<uint32_t>(region.width), static_cast<uint32_t>(region.height),
+            pixel_format,
+            std::vector<uint8_t>(static_cast<std::size_t>(region.width) * region.height *
+                mirgud::bytes_per_pixel(pixel_format))};
         try
         {
-            mirgud::copy_rows_to_rgb565(region.pixel_format,
+            mirgud::copy_rows(pixel_format, region.pixel_format,
                 reinterpret_cast<uint8_t const*>(region.vaddr), region.stride,
                 region.width, region.height, row_order, frame.pixels.data());
-            /* The vector is now independent; this immediately releases the Mir buffer. */
+            auto const conversion_end = std::chrono::steady_clock::now();
+            *capture_us = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+                conversion_start - capture_start).count());
+            *conversion_us = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+                conversion_end - conversion_start).count());
             mir_buffer_stream_swap_buffers_sync(stream);
             return frame;
         }
         catch (...)
         {
-            /* Do not retain a failed conversion's borrowed Mir buffer either. */
             mir_buffer_stream_swap_buffers_sync(stream);
             throw;
         }
@@ -738,13 +775,15 @@ public:
 
 private:
     MirBufferStream* stream;
+    mirgud::PixelFormat pixel_format;
     mirgud::RowOrder row_order;
 };
 
 class EglCapture
 {
 public:
-    EglCapture(MirConnection* connection, MirBufferStream* stream, uint32_t width, uint32_t height) : width{width}, height{height}
+    EglCapture(MirConnection* connection, MirBufferStream* stream, uint32_t width, uint32_t height,
+               mirgud::PixelFormat pixel_format) : width{width}, height{height}, pixel_format{pixel_format}
     {
         static EGLint const attributes[] = {EGL_SURFACE_TYPE, EGL_WINDOW_BIT, EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8,
             EGL_BLUE_SIZE, 8, EGL_ALPHA_SIZE, 8, EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT, EGL_NONE};
@@ -768,7 +807,8 @@ public:
         glReadPixels(0, 0, 1, 1, GL_BGRA_EXT, GL_UNSIGNED_BYTE, &test_pixel);
         read_format = glGetError() == GL_NO_ERROR ? GL_BGRA_EXT : GL_RGBA;
         bytes.resize(static_cast<std::size_t>(width) * height * 4);
-        std::cerr << "mirgud: virtual frame source uses EGL readback fallback " << width << "x" << height << std::endl;
+        std::cerr << "mirgud: virtual frame source uses EGL readback fallback " << width << "x" << height <<
+            " transport=" << mirgud::format_name(pixel_format) << std::endl;
     }
 
     ~EglCapture()
@@ -784,20 +824,26 @@ public:
         }
     }
 
-    Frame next()
+    mirgud::Frame next(uint64_t* capture_us, uint64_t* conversion_us)
     {
+        auto const capture_start = std::chrono::steady_clock::now();
         try
         {
             glReadPixels(0, 0, width, height, read_format, GL_UNSIGNED_BYTE, bytes.data());
             if (glGetError() != GL_NO_ERROR)
                 throw std::runtime_error{"EGL screencast readback failed"};
-            Frame frame{width, height, std::vector<uint16_t>(static_cast<std::size_t>(width) * height)};
+            auto const conversion_start = std::chrono::steady_clock::now();
+            mirgud::Frame frame{width, height, pixel_format,
+                std::vector<uint8_t>(static_cast<std::size_t>(width) * height *
+                    mirgud::bytes_per_pixel(pixel_format))};
             auto const format = read_format == GL_BGRA_EXT ? mir_pixel_format_argb_8888 : mir_pixel_format_abgr_8888;
-            for (uint32_t y = 0; y != height; ++y)
-            {
-                auto const* const row = bytes.data() + static_cast<std::size_t>(height - 1 - y) * width * 4;
-                mirgud::convert_row_to_rgb565(format, row, frame.pixels.data() + static_cast<std::size_t>(y) * width, width);
-            }
+            mirgud::copy_rows_from_rgba(pixel_format, bytes.data(), width, height,
+                mirgud::RowOrder::bottom_up, frame.pixels.data());
+            auto const conversion_end = std::chrono::steady_clock::now();
+            *capture_us = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+                conversion_start - capture_start).count());
+            *conversion_us = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+                conversion_end - conversion_start).count());
             if (!eglSwapBuffers(display, surface))
                 throw std::runtime_error{"EGL screencast buffer release failed"};
             return frame;
@@ -812,6 +858,7 @@ public:
 private:
     uint32_t width;
     uint32_t height;
+    mirgud::PixelFormat pixel_format;
     std::vector<uint8_t> bytes;
     EGLDisplay display{EGL_NO_DISPLAY};
     EGLContext context{EGL_NO_CONTEXT};
@@ -824,7 +871,14 @@ void report(Stats const& stats, pid_t monitor_pid)
 {
     std::cerr << "mirgud: frames_received=" << stats.received << " frames_presented=" << stats.presented <<
         " frames_dropped=" << stats.dropped << " conversion_failures=" << stats.conversion_failures <<
-        " gud_submit_failures=" << stats.submit_failures << " self_fds=" << fd_count(getpid());
+        " gud_submit_failures=" << stats.submit_failures;
+    if (stats.received > 0)
+    {
+        std::cerr << " capture_us_avg=" << stats.capture_us / stats.received <<
+            " conversion_us_avg=" << stats.conversion_us / stats.received <<
+            " submit_us_avg=" << stats.submit_us / stats.received;
+    }
+    std::cerr << " self_fds=" << fd_count(getpid());
     if (monitor_pid > 0)
         std::cerr << " monitor_pid=" << monitor_pid << " monitor_fds=" << fd_count(monitor_pid) <<
             " monitor_sync_files=" << sync_file_count(monitor_pid);
@@ -841,6 +895,7 @@ try
     pid_t monitor_pid{};
     std::string socket;
     std::string source_mode{"primary"};
+    std::string pixel_format_str{"rgb565"};
     bool pattern{};
     bool no_gud{};
     bool extend_hold{};
@@ -850,6 +905,7 @@ try
     int status_fd{-1};
     std::string dump_frame;
     uint64_t dump_frame_after{1};
+    uint64_t dump_frame_interval{0};
     std::vector<int> capture_region;
     po::options_description options{"Usage"};
     options.add_options()
@@ -857,10 +913,12 @@ try
         ("mir-socket-file,m", po::value<std::string>(&socket), "Mir server socket")
         ("source-mode", po::value<std::string>(&source_mode),
             "source selection: primary (default) or extend (Aethercast-compatible)")
+        ("pixel-format", po::value<std::string>(&pixel_format_str),
+            "transport pixel format: rgb565 (default) or xrgb8888")
         ("size,s", po::value<std::vector<uint32_t>>()->multitoken(), "GUD/screencast size (default 1280 720)")
         ("cap-interval", po::value<uint32_t>(&capture_interval), "capture every N display intervals")
         ("monitor-pid", po::value<pid_t>(&monitor_pid), "sample this compositor PID's fd/sync_file counts")
-        ("pattern", po::bool_switch(&pattern), "Stage A: send the static RGB565 checkerboard, without Mir")
+        ("pattern", po::bool_switch(&pattern), "Stage A: send the static checkerboard, without Mir")
         ("no-gud", po::bool_switch(&no_gud), "source-only stop-condition probe: copy/release frames without opening GUD")
         ("extend-hold", po::bool_switch(&extend_hold),
             "hold an Aethercast-compatible extend screencast without reading frames")
@@ -869,9 +927,11 @@ try
         ("gud-connector", po::value<uint32_t>(&gud_connector), "required GUD connector id (managed mode)")
         ("status-fd", po::value<int>(&status_fd), "managed status pipe fd")
         ("dump-frame", po::value<std::string>(&dump_frame),
-            "write one completed owned RGB565 frame as a binary PPM")
+            "write completed owned frames as binary PPM (prefix or single path)")
         ("dump-frame-after", po::value<uint64_t>(&dump_frame_after),
             "dump after this completed frame (default 1; requires --dump-frame)")
+        ("dump-frame-interval", po::value<uint64_t>(&dump_frame_interval),
+            "dump every N frames after --dump-frame-after (0 = dump once; requires --dump-frame)")
         ("capture-region", po::value<std::vector<int>>(&capture_region)->multitoken(),
             "experimental Mir screencast rectangle: X Y WIDTH HEIGHT");
     po::variables_map variables;
@@ -906,11 +966,22 @@ try
         throw std::runtime_error{"--dump-frame-after requires --dump-frame"};
     if (!dump_frame.empty() && dump_frame_after == 0)
         throw std::runtime_error{"--dump-frame-after must be positive"};
+    if (variables.count("dump-frame-interval") && dump_frame.empty())
+        throw std::runtime_error{"--dump-frame-interval requires --dump-frame"};
     if (managed && (gud_fd < 0 || !gud_connector || status_fd < 0 || pattern || no_gud || extend_hold ||
         !dump_frame.empty() || source_mode != "extend" || socket != "/run/mir_socket"))
         throw std::runtime_error{"managed mode requires inherited GUD/status fds and the fixed extend source"};
     if (!managed && (variables.count("gud-fd") || variables.count("gud-connector") || variables.count("status-fd")))
         throw std::runtime_error{"managed fd options require --managed"};
+
+    mirgud::PixelFormat pixel_format{};
+    if (pixel_format_str == "rgb565")
+        pixel_format = mirgud::PixelFormat::rgb565;
+    else if (pixel_format_str == "xrgb8888")
+        pixel_format = mirgud::PixelFormat::xrgb8888;
+    else
+        throw std::runtime_error{"pixel-format must be rgb565 or xrgb8888"};
+
     managed_mode = managed;
     managed_status_fd = status_fd;
     if (managed_mode)
@@ -928,13 +999,13 @@ try
         std::cerr << "mirgud: GUD disabled for source-only stability probe" << std::endl;
     else
     {
-        kms = std::make_unique<GudKms>(width, height, gud_fd, gud_connector);
+        kms = std::make_unique<GudKms>(width, height, pixel_format, gud_fd, gud_connector);
         kms->setup();
         managed_status("MODESET_BEGIN");
         kms->initial_modeset();
         managed_status("MODESET_COMPLETE");
     }
-    LatestFramePresenter presenter{[&kms](Frame const& frame)
+    LatestFramePresenter presenter{[&kms](mirgud::Frame const& frame)
     {
         if (kms)
             kms->present(frame);
@@ -943,7 +1014,8 @@ try
     if (pattern)
     {
         std::cerr << "mirgud: Stage A checkerboard started; verify it on HDMI before Stage B" << std::endl;
-        auto const frame = Frame{width, height, mirgud::checkerboard_rgb565(width, height)};
+        auto const frame = mirgud::Frame{width, height, pixel_format,
+            mirgud::checkerboard(pixel_format, width, height)};
         auto next_report = std::chrono::steady_clock::now();
         while (keep_running())
         {
@@ -1026,7 +1098,8 @@ try
     if (!stream)
         throw std::runtime_error{"Mir screencast has no buffer stream"};
     std::cerr << "mirgud: Stage B virtual/screencast source enabled " << width << "x" << height <<
-        " requested_format=" << static_cast<int>(format) << std::endl;
+        " requested_format=" << static_cast<int>(format) << " transport=" <<
+        mirgud::format_name(pixel_format) << std::endl;
 
     if (extend_hold)
     {
@@ -1046,20 +1119,37 @@ try
     }
 
     auto next_report = std::chrono::steady_clock::now();
-    auto dump_completed_frame = [&dump_frame, dump_frame_after](Frame const& frame, uint64_t frame_number)
+    auto dump_completed_frame = [&dump_frame, dump_frame_after, dump_frame_interval](
+        mirgud::Frame const& frame, uint64_t frame_number)
     {
-        if (!dump_frame.empty() && frame_number >= dump_frame_after)
+        if (dump_frame.empty())
+            return;
+        if (frame_number < dump_frame_after)
+            return;
+        if (dump_frame_interval == 0)
         {
-            write_ppm(frame, dump_frame);
-            std::cerr << "mirgud: dumped completed RGB565 frame=" << frame_number << " path=" << dump_frame <<
-                " size=" << frame.width << "x" << frame.height << std::endl;
-            dump_frame.clear();
+            if (frame_number == dump_frame_after)
+            {
+                write_ppm(frame, dump_frame);
+                std::cerr << "mirgud: dumped completed frame=" << frame_number << " path=" << dump_frame <<
+                    " size=" << frame.width << "x" << frame.height << " format=" <<
+                    mirgud::format_name(frame.format) << std::endl;
+                dump_frame.clear();
+            }
+        }
+        else if ((frame_number - dump_frame_after) % dump_frame_interval == 0)
+        {
+            auto const path = dump_frame + "." + std::to_string(frame_number) + ".ppm";
+            write_ppm(frame, path);
+            std::cerr << "mirgud: dumped completed frame=" << frame_number << " path=" << path <<
+                " size=" << frame.width << "x" << frame.height << " format=" <<
+                mirgud::format_name(frame.format) << std::endl;
         }
     };
     std::unique_ptr<DirectCapture> direct;
     try
     {
-        direct = std::make_unique<DirectCapture>(stream,
+        direct = std::make_unique<DirectCapture>(stream, pixel_format,
             source_mode == "extend" ? mirgud::RowOrder::top_down : mirgud::RowOrder::bottom_up);
     }
     catch (std::exception const& direct_error)
@@ -1077,15 +1167,18 @@ try
             auto const start = std::chrono::steady_clock::now();
             try
             {
-                auto frame = direct->next();
-                presenter.received();
+                uint64_t capture_us{};
+                uint64_t conversion_us{};
+                auto frame = direct->next(&capture_us, &conversion_us);
+                presenter.received(capture_us, conversion_us);
                 ++frame_number;
                 dump_completed_frame(frame, frame_number);
                 if (no_gud && (frame_number == 1 || frame_number % 60 == 0))
                 {
                     auto const fingerprint = sampled_fingerprint(frame);
                     std::cerr << "mirgud: xdisp frame=" << frame_number << " hash=0x" << std::hex << fingerprint <<
-                        std::dec << " changed=" << (!have_prior_fingerprint || fingerprint != prior_fingerprint) << std::endl;
+                        std::dec << " changed=" << (!have_prior_fingerprint || fingerprint != prior_fingerprint) <<
+                        " format=" << mirgud::format_name(frame.format) << std::endl;
                     prior_fingerprint = fingerprint;
                     have_prior_fingerprint = true;
                 }
@@ -1111,7 +1204,7 @@ try
     }
     else
     {
-        EglCapture capture{connection.get(), stream, width, height};
+        EglCapture capture{connection.get(), stream, width, height, pixel_format};
         bool first{};
         uint64_t prior_fingerprint{};
         bool have_prior_fingerprint{};
@@ -1119,15 +1212,18 @@ try
         while (keep_running())
         {
             auto const start = std::chrono::steady_clock::now();
-            auto frame = capture.next();
-            presenter.received();
+            uint64_t capture_us{};
+            uint64_t conversion_us{};
+            auto frame = capture.next(&capture_us, &conversion_us);
+            presenter.received(capture_us, conversion_us);
             ++frame_number;
             dump_completed_frame(frame, frame_number);
             if (no_gud && (frame_number == 1 || frame_number % 60 == 0))
             {
                 auto const fingerprint = sampled_fingerprint(frame);
                 std::cerr << "mirgud: xdisp frame=" << frame_number << " hash=0x" << std::hex << fingerprint <<
-                    std::dec << " changed=" << (!have_prior_fingerprint || fingerprint != prior_fingerprint) << std::endl;
+                    std::dec << " changed=" << (!have_prior_fingerprint || fingerprint != prior_fingerprint) <<
+                    " format=" << mirgud::format_name(frame.format) << std::endl;
                 prior_fingerprint = fingerprint;
                 have_prior_fingerprint = true;
             }
