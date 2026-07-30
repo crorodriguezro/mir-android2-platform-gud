@@ -23,6 +23,7 @@
 #include "mir/graphics/frame.h"
 #include "mir/geometry/size.h"
 #include "display_name.h"
+#include "gud_output.h"
 #include <memory>
 #include <functional>
 
@@ -46,6 +47,8 @@ public:
         std::function<void(DisplayName,graphics::Frame::Timestamp)> const& vsync_cb,
         std::function<void()> const& refresh_cb) = 0;
 
+    virtual bool external_is_gud() const { return false; }
+
 protected:
     HwcConfiguration() = default;
     HwcConfiguration(HwcConfiguration const&) = delete;
@@ -60,6 +63,7 @@ public:
     HwcBlankingControl(std::shared_ptr<HwcWrapper> const&, MirPixelFormat format);
     void power_mode(DisplayName, MirPowerMode) override;
     DisplayConfigurationOutput active_config_for(DisplayName) override;
+    bool external_is_gud() const override { return gud_external; }
     ConfigChangeSubscription subscribe_to_config_changes(
         std::function<void()> const& hotplug_cb,
         std::function<void(DisplayName,graphics::Frame::Timestamp)> const& vsync_cb,
@@ -69,6 +73,8 @@ private:
     std::shared_ptr<HwcWrapper> const hwc_device;
     bool off;
     MirPixelFormat format;
+    GudOutput::Mode gud_mode;
+    bool gud_external{false};
 };
 
 class HwcWrapper;
@@ -78,6 +84,7 @@ public:
     HwcPowerModeControl(std::shared_ptr<HwcWrapper> const&);
     void power_mode(DisplayName, MirPowerMode) override;
     DisplayConfigurationOutput active_config_for(DisplayName) override;
+    bool external_is_gud() const override { return gud_external; }
     ConfigChangeSubscription subscribe_to_config_changes(
         std::function<void()> const& hotplug_cb,
         std::function<void(DisplayName,graphics::Frame::Timestamp)> const& vsync_cb,
@@ -86,6 +93,8 @@ public:
 private:
     std::shared_ptr<HwcWrapper> const hwc_device;
     MirPixelFormat format;
+    GudOutput::Mode gud_mode;
+    bool gud_external{false};
 };
 
 }

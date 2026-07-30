@@ -19,11 +19,13 @@
 #include "src/platforms/android/server/configurable_display_buffer.h"
 #include "src/platforms/android/server/display_group.h"
 #include "src/platforms/android/server/display_device_exceptions.h"
+#include "src/platforms/android/server/gud_synthetic_output_control.h"
 #include "mir/test/doubles/mock_display_device.h"
 #include "mir/test/doubles/stub_renderable_list_compositor.h"
 #include "mir/test/doubles/stub_swapping_gl_context.h"
 #include "mir/test/fake_shared.h"
 #include <memory>
+#include <vector>
 
 namespace mg=mir::graphics;
 namespace mga=mir::graphics::android;
@@ -38,17 +40,44 @@ struct StubConfigurableDB : mga::ConfigurableDisplayBuffer, mg::NativeDisplayBuf
     bool overlay(mg::RenderableList const&) override { return false; }
     glm::mat2 transformation() const override { return {}; }
     mg::NativeDisplayBuffer* native_display_buffer() override { return this; }
-    void configure(MirPowerMode, glm::mat2 const&, mir::geometry::Rectangle const&) override {}
+    void configure(MirPowerMode power_mode, glm::mat2 const&, mir::geometry::Rectangle const&) override
+    {
+        mode = power_mode;
+    }
     mga::DisplayContents contents() override
     {
         return mga::DisplayContents{mga::DisplayName::primary, list, offset, context, compositor};
     }
-    MirPowerMode power_mode() const override { return mir_power_mode_on; }
+    MirPowerMode power_mode() const override { return mode; }
+    MirPowerMode mode{mir_power_mode_on};
     mtd::StubRenderableListCompositor mutable compositor;
     mtd::StubSwappingGLContext mutable context;
     mir::geometry::Displacement offset { 0, 0 };
     mga::LayerList mutable list{std::make_shared<mga::IntegerSourceCrop>(), {}, offset};
 };
+}
+
+TEST(DisplayGroup, offers_only_the_powered_on_synthetic_external_to_the_compositor)
+{
+    using namespace testing;
+    NiceMock<mtd::MockDisplayDevice> mock_device;
+    auto primary = std::make_unique<StubConfigurableDB>();
+    auto* const primary_buffer = primary.get();
+    auto external = std::make_unique<StubConfigurableDB>();
+    auto* const external_buffer = external.get();
+    mga::DisplayGroup group(mt::fake_shared(mock_device), std::move(primary));
+    group.add(mga::DisplayName::external, std::move(external));
+
+    group.configure(mga::DisplayName::primary, mir_power_mode_off, {}, {});
+    group.configure(mga::DisplayName::external, mir_power_mode_on, {}, {});
+
+    std::vector<mg::DisplayBuffer*> compositor_targets;
+    group.for_each_display_buffer(
+        [&](mg::DisplayBuffer& buffer) { compositor_targets.push_back(&buffer); });
+
+    ASSERT_TRUE(mga::should_offer_synthetic_output_to_compositor());
+    ASSERT_THAT(compositor_targets, ElementsAre(external_buffer));
+    EXPECT_THAT(compositor_targets, Not(Contains(primary_buffer)));
 }
 
 TEST(DisplayGroup, db_additions_and_removals)

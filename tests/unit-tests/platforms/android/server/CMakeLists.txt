@@ -4,6 +4,8 @@
 list(APPEND ANDROID_UNIT_TEST_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/hwc_struct_helpers.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/test_buffer.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/test_gud_presentation_worker.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/test_gud_screencast_rgb565.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/test_sync_fence.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/test_buffer_tex_bind.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/test_display.cpp

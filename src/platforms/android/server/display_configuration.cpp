@@ -15,7 +15,14 @@
  */
 
 #include "display_configuration.h"
+
+#define MIR_LOG_COMPONENT "android-display"
+
+#include "mir/log.h"
 #include <boost/throw_exception.hpp>
+
+#include <cstdlib>
+#include <cstring>
 
 namespace mg = mir::graphics;
 namespace mga = mg::android;
@@ -186,6 +193,32 @@ void mga::DisplayConfiguration::set_virtual_output_to(int width, int height)
     virt_config.used = true;
     virt_config.power_mode = mir_power_mode_on;
     virt_config.modes[0].size = {width, height};
+
+    /*
+     * XDISP-V0.2 experiment: retain the normal overlapping virtual-output
+     * geometry unless the server is explicitly asked to expose it beside the
+     * primary display. This changes only logical Mir geometry; it does not
+     * create an Android/HWC physical display.
+     */
+    auto const extended_desktop = std::getenv("XDISP_VIRTUAL_EXTENDED_DESKTOP");
+    if (extended_desktop && std::strcmp(extended_desktop, "1") == 0)
+    {
+        auto const& primary_config = primary();
+        auto const primary_width = primary_config.modes[primary_config.current_mode_index].size.width.as_int();
+        virt_config.top_left = {primary_width, 0};
+    }
+    else
+    {
+        virt_config.top_left = {0, 0};
+    }
+    mir::log_info(
+        "xdisp topology phase=virtual-output-created id=%d type=%d connected=%d used=%d power=%d "
+        "mode=%dx%d top_left=(%d,%d) scale=%g form_factor=%d extended_desktop=%d",
+        virt_config.id.as_value(), static_cast<int>(virt_config.type), virt_config.connected, virt_config.used,
+        virt_config.power_mode, virt_config.modes[virt_config.current_mode_index].size.width.as_int(),
+        virt_config.modes[virt_config.current_mode_index].size.height.as_int(), virt_config.top_left.x.as_int(),
+        virt_config.top_left.y.as_int(), virt_config.scale, virt_config.form_factor,
+        extended_desktop && std::strcmp(extended_desktop, "1") == 0);
 }
 
 void mga::DisplayConfiguration::disable_virtual_output()

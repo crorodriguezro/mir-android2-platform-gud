@@ -24,6 +24,9 @@
 #include "mir/graphics/egl_resources.h"
 #include "mir/graphics/transformation.h"
 #include "display.h"
+#include "gud_output.h"
+#include "gud_offscreen_target.h"
+#include "gud_synthetic_output_control.h"
 #include "virtual_output.h"
 #include "display_component_factory.h"
 #include "interpreter_cache.h"
@@ -108,9 +111,27 @@ void set_powermode_all_displays(
     mga::DisplayConfiguration& config,
     MirPowerMode intended_mode) noexcept
 {
-    power_mode_safe(mga::DisplayName::primary, control, config.primary(), intended_mode);
+    auto const primary_mode = mga::should_expose_synthetic_gud_output() && config.external().connected &&
+            !mga::should_mark_primary_output_used() ? mir_power_mode_off : intended_mode;
+    power_mode_safe(mga::DisplayName::primary, control, config.primary(), primary_mode);
     if (config.external().connected)
         power_mode_safe(mga::DisplayName::external, control, config.external(), intended_mode); 
+}
+
+MirPowerMode effective_power_mode(
+    mga::DisplayName name,
+    mg::DisplayConfigurationOutput const& output,
+    mga::DisplayConfiguration& current_config)
+{
+    if (name == mga::DisplayName::primary &&
+        mga::should_expose_synthetic_gud_output() &&
+        current_config.external().connected &&
+        mga::should_mark_synthetic_output_used() &&
+        !mga::should_mark_primary_output_used() &&
+        !output.used)
+        return mir_power_mode_off;
+
+    return output.power_mode;
 }
 
 std::unique_ptr<mga::ConfigurableDisplayBuffer> create_display_buffer(
@@ -123,11 +144,20 @@ std::unique_ptr<mga::ConfigurableDisplayBuffer> create_display_buffer(
     std::shared_ptr<mga::NativeWindowReport> const& report,
     mga::OverlayOptimization overlay_option)
 {
-    std::shared_ptr<mga::FramebufferBundle> fbs{display_buffer_builder.create_framebuffers(config)};
     auto cache = std::make_shared<mga::InterpreterCache>();
     mga::DeviceQuirks quirks(mga::PropertiesOps{}, gl_context);
-    auto interpreter = std::make_shared<mga::ServerRenderWindow>(fbs, config.current_format, cache, quirks); 
-    auto native_window = std::make_shared<mga::MirNativeWindow>(interpreter, report);
+    auto const offscreen = mga::should_use_gud_offscreen_target(
+        mga::GudOutput::available(), name);
+    std::shared_ptr<mga::FramebufferBundle> fbs;
+    if (!offscreen)
+        fbs = display_buffer_builder.create_framebuffers(config);
+    std::shared_ptr<mga::MirNativeWindow> native_window;
+    if (!offscreen)
+    {
+        auto interpreter = std::make_shared<mga::ServerRenderWindow>(
+            fbs, config.current_format, cache, quirks, name);
+        native_window = std::make_shared<mga::MirNativeWindow>(interpreter, report);
+    }
     return std::unique_ptr<mga::ConfigurableDisplayBuffer>(new mga::DisplayBuffer(
         name,
         display_buffer_builder.create_layer_list(),
@@ -138,7 +168,8 @@ std::unique_ptr<mga::ConfigurableDisplayBuffer> create_display_buffer(
         *gl_program_factory,
         mg::transformation(config.orientation),
         config.extents(),
-        overlay_option));
+        overlay_option,
+        offscreen));
 }
 }
 
@@ -185,6 +216,14 @@ mga::Display::Display(
 {
     //Some drivers (depending on kernel state) incorrectly report an error code indicating that the display is already on. Ignore the first failure.
     set_powermode_all_displays(*hwc_config, config, mir_power_mode_on);
+    displays.configure(
+        mga::DisplayName::primary,
+        config.primary().power_mode,
+        mg::transformation(config.primary().orientation),
+        config.primary().extents());
+    mir::log_info(
+        "xdisp initial buffer state: output=primary config_power=%d buffer_power=%d",
+        config.primary().power_mode, config.primary().power_mode);
 
     if (config.external().connected)
     {
@@ -198,6 +237,14 @@ mga::Display::Display(
                 gl_context,
                 native_window_report,
                 overlay_option));
+        displays.configure(
+            mga::DisplayName::external,
+            config.external().power_mode,
+            mg::transformation(config.external().orientation),
+            config.external().extents());
+        mir::log_info(
+            "xdisp initial buffer state: output=external config_power=%d buffer_power=%d",
+            config.external().power_mode, config.external().power_mode);
     }
 
     display_report->report_successful_setup_of_native_resources();
@@ -329,13 +376,16 @@ auto mga::Display::create_hardware_cursor() -> std::shared_ptr<Cursor>
 
 std::unique_ptr<mg::VirtualOutput> mga::Display::create_virtual_output(int width, int height)
 {
+    mir::log_info("xdisp virt trace: create_virtual_output %dx%d", width, height);
     auto enable_virtual_output = [this, width, height]
     {
+        mir::log_info("xdisp virt trace: enable callback %dx%d", width, height);
         config.set_virtual_output_to(width, height);
         on_hotplug();
     };
     auto disable_virtual_output = [this]
     {
+        mir::log_info("xdisp virt trace: disable callback");
         config.disable_virtual_output();
         on_hotplug();
     };
@@ -413,13 +463,37 @@ void mga::Display::configure_locked(
 
             if (config.primary().id == output.id)
             {
-                power_mode(mga::DisplayName::primary, *hwc_config, config.primary(), output.power_mode);
-                displays.configure(mga::DisplayName::primary, output.power_mode, transform, output.extents());
+                auto const effective_mode = effective_power_mode(
+                    mga::DisplayName::primary, output, config);
+                auto& trace = configure_trace[0];
+                if (!trace.initialized || trace.used != output.used ||
+                    trace.requested_power != output.power_mode ||
+                    trace.effective_power != effective_mode)
+                {
+                    mir::log_info(
+                        "xdisp configure: output=primary used=%d requested_power=%d effective_power=%d",
+                        output.used, output.power_mode, effective_mode);
+                    trace = {true, output.used, output.power_mode, effective_mode};
+                }
+                power_mode(mga::DisplayName::primary, *hwc_config, config.primary(), effective_mode);
+                displays.configure(mga::DisplayName::primary, effective_mode, transform, output.extents());
             }
             else if (config.external().id == output.id && config.external().connected)
             {
-                power_mode(mga::DisplayName::external, *hwc_config, config.external(), output.power_mode);
-                displays.configure(mga::DisplayName::external, output.power_mode, transform, output.extents());
+                auto const effective_mode = effective_power_mode(
+                    mga::DisplayName::external, output, config);
+                auto& trace = configure_trace[1];
+                if (!trace.initialized || trace.used != output.used ||
+                    trace.requested_power != output.power_mode ||
+                    trace.effective_power != effective_mode)
+                {
+                    mir::log_info(
+                        "xdisp configure: output=external used=%d requested_power=%d effective_power=%d",
+                        output.used, output.power_mode, effective_mode);
+                    trace = {true, output.used, output.power_mode, effective_mode};
+                }
+                power_mode(mga::DisplayName::external, *hwc_config, config.external(), effective_mode);
+                displays.configure(mga::DisplayName::external, effective_mode, transform, output.extents());
             }
         });
     old_outputs = config.output_connections();

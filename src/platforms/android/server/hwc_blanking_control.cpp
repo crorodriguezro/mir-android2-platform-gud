@@ -18,6 +18,8 @@
 
 #include "hwc_configuration.h"
 #include "hwc_wrapper.h"
+#include "gud_output.h"
+#include "gud_synthetic_output_control.h"
 #include "mir/raii.h"
 #include "android_format_conversion-inl.h"
 #include "mir/geometry/length.h"
@@ -96,21 +98,25 @@ mga::HwcBlankingControl::HwcBlankingControl(
     std::shared_ptr<mga::HwcWrapper> const& hwc_device) :
     hwc_device{hwc_device},
     off{false},
-    format(determine_hwc_fb_format())
-{
-}
+    format(determine_hwc_fb_format()),
+    gud_mode{GudOutput::startup_mode()},
+    gud_external{gud_mode.valid() && mga::should_expose_synthetic_gud_output()}
+{}
 
 mga::HwcBlankingControl::HwcBlankingControl(
     std::shared_ptr<mga::HwcWrapper> const& hwc_device,
     MirPixelFormat format) :
     hwc_device{hwc_device},
     off{false},
-    format{format}
-{
-}
+    format{format},
+    gud_mode{GudOutput::startup_mode()},
+    gud_external{gud_mode.valid() && mga::should_expose_synthetic_gud_output()}
+{}
 
 void mga::HwcBlankingControl::power_mode(DisplayName display_name, MirPowerMode mode_request)
 {
+    if (gud_external && display_name == mga::DisplayName::external)
+        return;
     if (mode_request == mir_power_mode_on)
     {
         hwc_device->display_on(display_name);
@@ -150,7 +156,8 @@ mg::DisplayConfigurationOutput populate_config(
     geom::Size mm_size,
     MirPowerMode external_mode,
     MirPixelFormat display_format,
-    bool connected)
+    bool connected,
+    bool used = true)
 {
     geom::Point const origin{0,0};
     size_t const preferred_format_index{0};
@@ -177,7 +184,7 @@ mg::DisplayConfigurationOutput populate_config(
         external_modes,
         preferred_mode_index,
         mm_size,
-        connected,
+        used,
         connected,
         origin,
         preferred_format_index,
@@ -235,6 +242,16 @@ mg::DisplayConfigurationOutput display_config_for(
         true);
 }
 
+mg::DisplayConfigurationOutput apply_test_primary_output_policy(
+    mga::DisplayName display_name,
+    mg::DisplayConfigurationOutput config,
+    bool synthetic_gud_external)
+{
+    if (synthetic_gud_external && display_name == mga::DisplayName::primary)
+        config.used = mga::should_mark_primary_output_used();
+    return config;
+}
+
 mga::ConfigChangeSubscription subscribe_to_config_changes(
     std::shared_ptr<mga::HwcWrapper> const& hwc_device,
     void const* subscriber,
@@ -258,6 +275,10 @@ mga::ConfigChangeSubscription subscribe_to_config_changes(
 
 mg::DisplayConfigurationOutput mga::HwcBlankingControl::active_config_for(DisplayName display_name)
 {
+    if (gud_external && display_name == mga::DisplayName::external)
+        return populate_config(display_name, {gud_mode.width, gud_mode.height}, gud_mode.vrefresh_hz, {0, 0},
+                               mir_power_mode_off, format, true, mga::should_mark_synthetic_output_used());
+
     auto configs = hwc_device->display_configs(display_name);
     if (configs.empty())
     {
@@ -267,7 +288,8 @@ mg::DisplayConfigurationOutput mga::HwcBlankingControl::active_config_for(Displa
             return populate_config(display_name, {0,0}, 0.0f, {0,0}, mir_power_mode_off, mir_pixel_format_invalid, false);
     }
 
-    return display_config_for(display_name, configs.front(), format, hwc_device);
+    return apply_test_primary_output_policy(
+        display_name, display_config_for(display_name, configs.front(), format, hwc_device), gud_external);
 }
 
 mga::ConfigChangeSubscription mga::HwcBlankingControl::subscribe_to_config_changes(
@@ -281,12 +303,15 @@ mga::ConfigChangeSubscription mga::HwcBlankingControl::subscribe_to_config_chang
 mga::HwcPowerModeControl::HwcPowerModeControl(
     std::shared_ptr<mga::HwcWrapper> const& hwc_device) :
     hwc_device{hwc_device},
-    format(determine_hwc_fb_format())
-{
-}
+    format(determine_hwc_fb_format()),
+    gud_mode{GudOutput::startup_mode()},
+    gud_external{gud_mode.valid() && mga::should_expose_synthetic_gud_output()}
+{}
 
 void mga::HwcPowerModeControl::power_mode(DisplayName display_name, MirPowerMode mode_request)
 {
+    if (gud_external && display_name == mga::DisplayName::external)
+        return;
     PowerMode mode;
     switch (mode_request)
     {
@@ -316,6 +341,9 @@ void mga::HwcPowerModeControl::power_mode(DisplayName display_name, MirPowerMode
 
 mg::DisplayConfigurationOutput mga::HwcPowerModeControl::active_config_for(DisplayName display_name)
 {
+    if (gud_external && display_name == mga::DisplayName::external)
+        return populate_config(display_name, {gud_mode.width, gud_mode.height}, gud_mode.vrefresh_hz, {0, 0},
+                               mir_power_mode_off, format, true, mga::should_mark_synthetic_output_used());
     auto configs = hwc_device->display_configs(display_name);
     if (configs.empty())
     {
@@ -337,7 +365,8 @@ mg::DisplayConfigurationOutput mga::HwcPowerModeControl::active_config_for(Displ
         hwc_device->set_active_config(display_name, configs.front());
     }
 
-    return display_config_for(display_name, active_config_id, format, hwc_device);
+    return apply_test_primary_output_policy(
+        display_name, display_config_for(display_name, active_config_id, format, hwc_device), gud_external);
 }
 
 mga::ConfigChangeSubscription mga::HwcPowerModeControl::subscribe_to_config_changes(

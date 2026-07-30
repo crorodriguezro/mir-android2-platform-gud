@@ -57,6 +57,7 @@ target_link_libraries(
   -lhwc2 -lgralloc -lhybris-eglplatformcommon -lsync
   ${ANDROID_PROPERTIES_LDFLAGS} ${ANDROID_PROPERTIES_LIBRARIES}
   ${WAYLAND_SERVER_LDFLAGS} ${WAYLAND_SERVER_LIBRARIES}
+  ${DRM_LDFLAGS} ${DRM_LIBRARIES}
   dl
 )
 

@@ -1,0 +1,5 @@
+[D-BUS Service]
+Name=org.lomiri.XDisp
+Exec=/bin/false
+User=root
+SystemdService=xdisp.service

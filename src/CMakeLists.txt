@@ -6,6 +6,23 @@ set(MIR_CLIENT_PLATFORM_PATH ${MIR_LIB_PATH}/client-platform)
 add_subdirectory(gl/)
 add_subdirectory(platforms/)
 
+# XDISP-V0 is a client executable. src/utils is intentionally not added as a
+# whole because this Android-platform checkout carries several absent legacy
+# utility sources there.
+mir_add_wrapped_executable(mirgud NOINSTALL ${PROJECT_SOURCE_DIR}/src/utils/gud_screencast.cpp)
+target_include_directories(mirgud PRIVATE SYSTEM ${DRM_INCLUDE_DIRS})
+target_link_libraries(mirgud
+  ${MIRCLIENT_LDFLAGS} ${MIRCLIENT_LIBRARIES}
+  ${Boost_PROGRAM_OPTIONS_LIBRARY}
+  ${EGL_LIBRARIES}
+  ${GLESv2_LIBRARIES}
+  ${DRM_LDFLAGS} ${DRM_LIBRARIES}
+)
+install(PROGRAMS ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/mirgud.bin
+  DESTINATION libexec/lomiri-xdisp
+  RENAME mirgud)
+add_subdirectory(xdisp)
+
 add_definitions(-DMIRCORE_LIBDIR="${MIRCORE_LIBDIR}")
 add_executable(wrapper wrapper.c)
 target_compile_definitions(wrapper PUBLIC

@@ -17,6 +17,7 @@
  */
 
 #include "gl_context.h"
+#include "buffer.h"
 #include "framebuffer_bundle.h"
 #include "android_format_conversion-inl.h"
 #include "mir/graphics/display_report.h"
@@ -229,30 +230,79 @@ void mga::PbufferGLContext::release_current() const
 mga::FramebufferGLContext::FramebufferGLContext(
     GLContext const& shared_gl_context,
     std::shared_ptr<FramebufferBundle> const& fb_bundle,
-    std::shared_ptr<ANativeWindow> const& native_window)
-     : GLContext(shared_gl_context),
-       fb_bundle(fb_bundle),
-       egl_surface{egl_display,
-                   eglCreateWindowSurface(egl_display, egl_config, native_window.get(), NULL)}
+    std::shared_ptr<ANativeWindow> const& native_window,
+    geometry::Size const& size,
+    bool offscreen)
+      : GLContext(shared_gl_context),
+        fb_bundle(fb_bundle),
+        egl_surface{egl_display,
+                     offscreen ? eglCreatePbufferSurface(egl_display, egl_config, dummy_pbuffer_attribs) :
+                                 eglCreateWindowSurface(egl_display, egl_config, native_window.get(), NULL)},
+        size(size),
+        offscreen(offscreen)
 {
-    const EGLint behavior = does_partial_updates() ? EGL_BUFFER_PRESERVED : EGL_BUFFER_DESTROYED;
-    eglSurfaceAttrib(egl_display, egl_surface, EGL_SWAP_BEHAVIOR, behavior);
+    if (!offscreen)
+    {
+        const EGLint behavior = does_partial_updates() ? EGL_BUFFER_PRESERVED : EGL_BUFFER_DESTROYED;
+        eglSurfaceAttrib(egl_display, egl_surface, EGL_SWAP_BEHAVIOR, behavior);
+    }
+}
+
+mga::FramebufferGLContext::~FramebufferGLContext()
+{
+    if (!offscreen || !texture)
+        return;
+
+    /* The synthetic target owns no Android buffer or window-surface resources. */
+    if (eglMakeCurrent(egl_display, egl_surface, egl_surface, egl_context) == EGL_TRUE)
+    {
+        glDeleteFramebuffers(1, &fbo);
+        glDeleteTextures(1, &texture);
+        release_current();
+    }
 }
 
 void mga::FramebufferGLContext::swap_buffers() const
 {
-    if (eglSwapBuffers(egl_display, egl_surface) == EGL_FALSE)
+    if (offscreen)
+    {
+        glFinish();
+    }
+    else if (eglSwapBuffers(egl_display, egl_surface) == EGL_FALSE)
+    {
         BOOST_THROW_EXCEPTION(mg::egl_error("eglSwapBuffers failure"));
+    }
 }
 
 std::shared_ptr<mg::Buffer> mga::FramebufferGLContext::last_rendered_buffer() const
 {
-    return fb_bundle->last_rendered_buffer();
+    return offscreen ? nullptr : fb_bundle->last_rendered_buffer();
 }
 
 void mga::FramebufferGLContext::make_current() const
 {
     GLContext::make_current(egl_surface);
+    if (!offscreen)
+        return;
+
+    if (!texture)
+    {
+        glGenTextures(1, &texture);
+        glBindTexture(GL_TEXTURE_2D, texture);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, size.width.as_int(), size.height.as_int(), 0,
+                     GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    }
+    if (!fbo)
+        glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture, 0);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+        BOOST_THROW_EXCEPTION(std::runtime_error("cannot bind synthetic GUD offscreen framebuffer"));
+    glViewport(0, 0, size.width.as_int(), size.height.as_int());
 }
 
 void mga::FramebufferGLContext::release_current() const

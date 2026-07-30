@@ -25,6 +25,8 @@
 #include "hwc_layerlist.h"
 #include <memory>
 #include <vector>
+#include <chrono>
+#include <cstdint>
 
 namespace mir
 {
@@ -41,7 +43,8 @@ class HwcConfiguration;
 class HwcDevice : public DisplayDevice
 {
 public:
-    HwcDevice(std::shared_ptr<HwcWrapper> const& hwc_wrapper);
+    HwcDevice(std::shared_ptr<HwcWrapper> const& hwc_wrapper, bool synthetic_gud_external = false);
+    ~HwcDevice() override;
 
     bool compatible_renderlist(RenderableList const& renderlist) override;
     void commit(std::list<DisplayContents> const& contents) override;
@@ -55,13 +58,19 @@ private:
 
     std::shared_ptr<HwcWrapper> const hwc_wrapper;
     std::shared_ptr<SyncFileOps> const sync_ops;
+    bool const synthetic_gud_external;
     std::chrono::milliseconds recommend_sleep{0};
+    uint64_t pacing_commit_count{0};
+    uint64_t pacing_primary_swap_count{0};
+    uint64_t pacing_external_swap_count{0};
+    std::chrono::steady_clock::time_point pacing_last_report{};
 };
 
 class HwcDevice20 : public HwcDevice
 {
 public:
-    HwcDevice20(std::shared_ptr<HwcWrapper> const& hwc_wrapper) : HwcDevice(hwc_wrapper) {};
+    HwcDevice20(std::shared_ptr<HwcWrapper> const& hwc_wrapper, bool synthetic_gud_external = false) :
+        HwcDevice(hwc_wrapper, synthetic_gud_external) {};
 
     bool compatible_renderlist(RenderableList const& renderlist) override;
 };

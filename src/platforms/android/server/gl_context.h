@@ -23,6 +23,7 @@
 #include "mir/graphics/egl_resources.h"
 #include "swapping_gl_context.h"
 #include "mir_toolkit/common.h"
+#include "mir/geometry/size.h"
 #include <functional>
 
 namespace mir
@@ -87,8 +88,11 @@ class FramebufferGLContext : public GLContext,
 {
 public:
     FramebufferGLContext(GLContext const& shared_gl_context,
-              std::shared_ptr<FramebufferBundle> const& fb_bundle,
-              std::shared_ptr<ANativeWindow> const& native_window);
+                std::shared_ptr<FramebufferBundle> const& fb_bundle,
+                std::shared_ptr<ANativeWindow> const& native_window,
+                geometry::Size const& size,
+                bool offscreen = false);
+    ~FramebufferGLContext();
 
     void make_current() const override;
     void release_current() const override;
@@ -98,6 +102,10 @@ public:
 private:
     std::shared_ptr<FramebufferBundle> const fb_bundle;
     EGLSurfaceStore const egl_surface;
+    geometry::Size const size;
+    bool const offscreen;
+    mutable unsigned int fbo{0};
+    mutable unsigned int texture{0};
 };
 
 }

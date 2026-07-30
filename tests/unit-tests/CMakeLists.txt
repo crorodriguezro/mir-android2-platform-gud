@@ -8,3 +8,4 @@ CMAKE_DEPENDENT_OPTION(
 
 add_subdirectory(client)
 add_subdirectory(platforms)
+add_subdirectory(xdisp)

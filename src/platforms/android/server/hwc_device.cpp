@@ -24,11 +24,19 @@
 #include "framebuffer_bundle.h"
 #include "buffer.h"
 #include "hwc_fallback_gl_renderer.h"
+#include "gud_output.h"
+#include "gud_hwc_boundary.h"
+#include "gud_render_only_control.h"
+#include "gud_synthetic_output_control.h"
 #include "mir/raii.h"
+#define MIR_LOG_COMPONENT "android-hwc-device"
+#include <mir/log.h>
 #include <limits>
 #include <algorithm>
 #include <chrono>
 #include <thread>
+#include <fstream>
+#include <unistd.h>
 
 namespace mg = mir::graphics;
 namespace mga=mir::graphics::android;
@@ -88,8 +96,11 @@ bool mga::HwcDevice::compatible_renderlist(RenderableList const& list)
     return true;
 }
 
-mga::HwcDevice::HwcDevice(std::shared_ptr<HwcWrapper> const& hwc_wrapper) :
-    hwc_wrapper(hwc_wrapper)
+mga::HwcDevice::HwcDevice(
+    std::shared_ptr<HwcWrapper> const& hwc_wrapper,
+    bool synthetic_gud_external) :
+    hwc_wrapper(hwc_wrapper),
+    synthetic_gud_external(synthetic_gud_external)
 {
 }
 
@@ -109,14 +120,46 @@ bool mga::HwcDevice::buffer_is_onscreen(mg::Buffer const& buffer) const
 void mga::HwcDevice::commit(std::list<DisplayContents> const& contents)
 {
     std::vector<std::shared_ptr<mg::Buffer>> next_onscreen_overlay_buffers;
+    std::list<DisplayContents> hwc_contents;
+    bool primary_needs_swap{false};
+    bool synthetic_external_present{false};
+    bool synthetic_external_needs_swap{false};
+    bool purely_overlays_before_synthetic_external{true};
 
-    hwc_wrapper->prepare(contents);
+    for (auto const& content : contents)
+    {
+        /*
+         * A GUD output is a Mir-rendered sink, not an Android-HWC display.
+         * Passing it to Android HWC can make a device try to present a
+         * nonexistent physical external display. Keep that path out of both
+         * prepare() and set(); its framebuffer is submitted below instead.
+         */
+        if (mga::should_submit_to_android_hwc(synthetic_gud_external, content.name))
+            hwc_contents.push_back(content);
+    }
+
+    hwc_wrapper->prepare(hwc_contents);
 
     bool purely_overlays = true;
 
     for (auto& content : contents)
     {
-        if (content.list.needs_swapbuffers())
+        if (synthetic_gud_external && content.name == mga::DisplayName::external &&
+            mga::should_bypass_synthetic_hwc_bookkeeping())
+            continue;
+        auto const synthetic_external = synthetic_gud_external &&
+            content.name == mga::DisplayName::external;
+        if (synthetic_external)
+        {
+            synthetic_external_present = true;
+            purely_overlays_before_synthetic_external = purely_overlays;
+        }
+        auto const needs_swap = content.list.needs_swapbuffers();
+        if (content.name == mga::DisplayName::primary)
+            primary_needs_swap = needs_swap;
+        if (synthetic_external)
+            synthetic_external_needs_swap = needs_swap;
+        if (needs_swap)
         {
             auto rejected_renderables = content.list.rejected_renderables();
             if (!rejected_renderables.empty())
@@ -126,9 +169,14 @@ void mga::HwcDevice::commit(std::list<DisplayContents> const& contents)
                     [&]{ content.context.release_current(); });
                 content.compositor.render(std::move(rejected_renderables), content.list_offset, content.context);
             }
-            content.list.setup_fb(content.context.last_rendered_buffer());
-            content.list.swap_occurred();
-            purely_overlays = false;
+            auto const framebuffer = content.context.last_rendered_buffer();
+            if (framebuffer)
+                content.list.setup_fb(framebuffer);
+            /* The synthetic sink is not submitted to Android HWC to consume this fence. */
+            if (mga::should_arm_android_hwc_acquire_fence(synthetic_gud_external, content.name))
+                content.list.swap_occurred();
+            if (mga::affects_hwc_pacing(synthetic_gud_external, content.name))
+                purely_overlays = false;
         }
     
         //setup overlays
@@ -144,7 +192,10 @@ void mga::HwcDevice::commit(std::list<DisplayContents> const& contents)
         }
     }
 
-    hwc_wrapper->set(contents);
+    if (synthetic_gud_external && !mga::should_bypass_synthetic_hwc_bookkeeping())
+        mga::GudOutput::present_external(contents);
+
+    hwc_wrapper->set(hwc_contents);
     onscreen_overlay_buffers = std::move(next_onscreen_overlay_buffers);
 
     for (auto& content : contents)
@@ -163,6 +214,49 @@ void mga::HwcDevice::commit(std::list<DisplayContents> const& contents)
      */
     using namespace std;
     recommend_sleep = purely_overlays ? 10ms : 0ms;
+
+    ++pacing_commit_count;
+    if (primary_needs_swap)
+        ++pacing_primary_swap_count;
+    if (synthetic_external_needs_swap)
+        ++pacing_external_swap_count;
+    auto const now = std::chrono::steady_clock::now();
+    if (pacing_last_report.time_since_epoch().count() == 0 ||
+        now - pacing_last_report >= std::chrono::seconds{1})
+    {
+        auto const commits = pacing_commit_count;
+        auto const primary_swaps = pacing_primary_swap_count;
+        auto const external_swaps = pacing_external_swap_count;
+        mir::log_info(
+            "XDISP pacing commits=%llu primary_swap=%llu external_swap=%llu synthetic=%d "
+            "purely_before_external=%d purely_overlays=%d sleep_ms=%lld render_only=%d worker=%d",
+            static_cast<unsigned long long>(commits),
+            static_cast<unsigned long long>(primary_swaps),
+            static_cast<unsigned long long>(external_swaps),
+            synthetic_external_present, purely_overlays_before_synthetic_external, purely_overlays,
+            static_cast<long long>(recommend_sleep.count()),
+            !mga::should_start_gud_presentation_worker(),
+            mga::should_start_gud_presentation_worker());
+        std::ofstream pacing_trace{"/tmp/xdisp-p0.2-pacing.log", std::ios::app};
+        pacing_trace << "pid=" << getpid() << " commits=" << commits
+                     << " primary_swap=" << primary_swaps
+                     << " external_swap=" << external_swaps
+                     << " synthetic=" << synthetic_external_present
+                     << " purely_before_external=" << purely_overlays_before_synthetic_external
+                     << " purely_overlays=" << purely_overlays
+                     << " sleep_ms=" << recommend_sleep.count()
+                     << " render_only=" << !mga::should_start_gud_presentation_worker()
+                     << " worker=" << mga::should_start_gud_presentation_worker() << '\n';
+        pacing_commit_count = 0;
+        pacing_primary_swap_count = 0;
+        pacing_external_swap_count = 0;
+        pacing_last_report = now;
+    }
+}
+
+mga::HwcDevice::~HwcDevice()
+{
+    GudOutput::shutdown();
 }
 
 std::chrono::milliseconds mga::HwcDevice::recommended_sleep() const
