@@ -213,16 +213,49 @@ def run_case(args, session, case, dry_run):
             (artifact / "stderr.log").write_text("mirgud: benchmark measured interval started after warmup_s=5\nreport_kind=final final=true frames_submitted=15 frames_presented=15 frames_dropped=0 frames_cancelled=0 gud_submit_failures=0 accounting_ok=true\n")
             (artifact / "phone-kernel.log").write_text("XDISP_MEASURE_START\nXDISP_MEASURE_END\n")
             (artifact / "pi-service.log").write_text("FunctionFS bulk receive session returned to Idle elapsed_ms=0\n")
+            state = transition(session, state, "waiting-for-idle-reset", warmup_completed=now(), idle_reset_wait_started=now())
+            state = transition(session, state, "running-measured", statistics_reset=True, measured_interval_started=now())
         else:
-            remote = " ".join(subprocess.list2cmdline([part]) for part in command)
+            password = os.environ.get("XDISP_PHONE_SUDO_PASSWORD")
+            if not password:
+                raise RuntimeError("XDISP_PHONE_SUDO_PASSWORD is required for marker-bounded collection")
+            marker = f"XDISP_CASE_{case['case_id']}_ATTEMPT_{attempt}"
+            remote_command = " ".join(subprocess.list2cmdline([part]) for part in command)
+            remote = (
+                f"printf '%s\\n' '{password}' | sudo -S sh -c 'echo {marker}_START > /dev/kmsg'; "
+                f"{remote_command}; result=$?; "
+                f"printf '%s\\n' '{password}' | sudo -S sh -c 'echo {marker}_END > /dev/kmsg'; exit $result"
+            )
             with (artifact / "stdout.log").open("w") as stdout, (artifact / "stderr.log").open("w") as stderr:
-                process = subprocess.run(["ssh", args.phone_host, remote], stdout=stdout, stderr=stderr, timeout=case["warmup_seconds"] + case["measured_seconds"] + 30)
+                process = subprocess.Popen(["ssh", args.phone_host, remote], stdout=stdout, stderr=stderr)
+                reset_seen = False
+                deadline = time.monotonic() + case["warmup_seconds"] + case["measured_seconds"] + 30
+                while process.poll() is None:
+                    if time.monotonic() > deadline:
+                        process.send_signal(signal.SIGTERM)
+                        raise RuntimeError("case process exceeded bounded shutdown deadline")
+                    if not reset_seen and "benchmark measured interval started" in (artifact / "stderr.log").read_text(errors="replace"):
+                        state = transition(session, state, "waiting-for-idle-reset", warmup_completed=now(), idle_reset_wait_started=now())
+                        state = transition(session, state, "running-measured", statistics_reset=True, measured_interval_started=now())
+                        reset_seen = True
+                    time.sleep(0.2)
+                if not reset_seen:
+                    raise RuntimeError("presenter_did_not_idle_after_warmup")
             (artifact / "exit-status.txt").write_text(str(process.returncode) + "\n")
-            subprocess.run(["ssh", args.phone_host, phone_sudo(args, "dmesg")], stdout=(artifact / "phone-kernel.log").open("w"), check=False)
+            subprocess.run(["ssh", args.phone_host, phone_sudo(args, "dmesg")], stdout=(artifact / "phone-kernel-full.log").open("w"), check=False)
+            full_kernel = (artifact / "phone-kernel-full.log").read_text(errors="replace")
+            bounded = []
+            active = False
+            for line in full_kernel.splitlines():
+                if f"{marker}_START" in line:
+                    active = True
+                if active:
+                    bounded.append(line)
+                if f"{marker}_END" in line:
+                    active = False
+            (artifact / "phone-kernel.log").write_text("\n".join(bounded) + "\n")
             subprocess.run(["ssh", args.pi_host, "journalctl -u gud-userspace.service -n 5000 --no-pager"], stdout=(artifact / "pi-service.log").open("w"), check=False)
-        transition(session, state, "waiting-for-idle-reset", warmup_completed=now(), idle_reset_wait_started=now())
-        transition(session, state, "running-measured", statistics_reset=True, measured_interval_started=now())
-        transition(session, state, "collecting", measured_interval_completed=now())
+        state = transition(session, state, "collecting", measured_interval_completed=now())
         state = transition(session, state, "validating")
         valid, reason = validate(case, artifact, dry_run)
         inventory = {path.name: sha256(path) for path in artifact.iterdir() if path.is_file()}
@@ -233,7 +266,8 @@ def run_case(args, session, case, dry_run):
         transition(session, state, "invalid", invalid_reason=reason)
         return False
     except Exception as error:
-        transition(session, state, "failed", error=str(error))
+        target = "invalid" if "presenter_did_not_idle_after_warmup" in str(error) else "failed"
+        transition(session, state, target, invalid_reason=str(error))
         return False
     finally:
         (session / "current-case.json").unlink(missing_ok=True)
