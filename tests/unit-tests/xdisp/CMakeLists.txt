@@ -9,6 +9,7 @@ mir_add_wrapped_executable(mir_unit_tests_xdisp NOINSTALL
 target_include_directories(mir_unit_tests_xdisp PRIVATE
   ${PROJECT_SOURCE_DIR}/src/xdisp
   ${PROJECT_SOURCE_DIR}/src/utils
+  ${DRM_INCLUDE_DIRS}
 )
 target_link_libraries(mir_unit_tests_xdisp
   ${GTEST_BOTH_LIBRARIES}

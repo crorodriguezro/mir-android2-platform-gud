@@ -8,6 +8,8 @@
 
 #include "mir_toolkit/common.h"
 
+#include <drm/drm_fourcc.h>
+
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -44,21 +46,14 @@ inline unsigned bytes_per_pixel(PixelFormat format)
     throw std::runtime_error{"unknown pixel format"};
 }
 
-/*
- * DRM_FORMAT_RGB565 = fourcc_code('R','G','1','6')
- *   = 0x52 | (0x47<<8) | (0x31<<16) | (0x36<<24) = 0x36314752
- * DRM_FORMAT_XRGB8888 = fourcc_code('X','R','2','4')
- *   = 0x58 | (0x52<<8) | (0x32<<16) | (0x34<<24) = 0x34325258
- * Verified against <drm/drm_fourcc.h>.
- */
 inline uint32_t drm_format(PixelFormat format)
 {
     switch (format)
     {
     case PixelFormat::rgb565:
-        return 0x36314752; /* DRM_FORMAT_RGB565 */
+        return DRM_FORMAT_RGB565;
     case PixelFormat::xrgb8888:
-        return 0x34325258; /* DRM_FORMAT_XRGB8888 */
+        return DRM_FORMAT_XRGB8888;
     }
     throw std::runtime_error{"unknown pixel format"};
 }
@@ -102,10 +97,9 @@ inline PixelFormat parse_pixel_format(std::string const& name)
  * On this little-endian target, DRM_FORMAT_XRGB8888 has memory layout
  * [B, G, R, X] per pixel (integer value 0x00RRGGBB).
  *
- * The only Mir source format with an identical byte-for-byte memory
- * representation is mir_pixel_format_xrgb_8888 (also 0x00RRGGBB, LE
- * memory [B, G, R, X]).  All other 4-byte Mir formats require channel
- * reordering.  3-byte and RGB565 sources require full conversion.
+ * Mir XRGB8888 and ARGB8888 both have visible channels [B, G, R] in memory
+ * on little-endian targets. The fourth byte is ignored XRGB padding or ARGB
+ * alpha respectively, so they are scanout-copy compatible for visible RGB.
  */
 enum class ConversionPath
 {
@@ -130,8 +124,9 @@ inline const char* conversion_path_name(ConversionPath path)
 }
 
 /*
- * Returns true when the Mir source format is byte-for-byte compatible with
- * DRM_FORMAT_XRGB8888 on this little-endian target.
+ * Returns true when the source can be copied to XRGB8888 scanout without
+ * changing the visible RGB channels. This is only valid on little-endian
+ * targets, where both eligible source layouts have memory [B, G, R, byte].
  *
  * DRM_FORMAT_XRGB8888 memory layout (LE): [B, G, R, X]
  * mir_pixel_format_xrgb_8888 integer: 0x00RRGGBB
@@ -140,18 +135,22 @@ inline const char* conversion_path_name(ConversionPath path)
  * Other 4-byte Mir formats:
  *   mir_pixel_format_abgr_8888  -> LE: [R, G, B, A]  not compatible
  *   mir_pixel_format_xbgr_8888  -> LE: [R, G, B, X]  not compatible
- *   mir_pixel_format_argb_8888  -> LE: [B, G, R, A]  not compatible (alpha differs)
  */
-inline bool xrgb8888_compatible(MirPixelFormat format)
+inline bool is_xrgb8888_scanout_copy_compatible(MirPixelFormat format)
 {
-    return format == mir_pixel_format_xrgb_8888;
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+    return format == mir_pixel_format_xrgb_8888 || format == mir_pixel_format_argb_8888;
+#else
+    (void)format;
+    return false;
+#endif
 }
 
 inline ConversionPath conversion_path_for(PixelFormat transport_format, MirPixelFormat mir_format)
 {
     if (transport_format == PixelFormat::xrgb8888)
     {
-        if (xrgb8888_compatible(mir_format))
+        if (is_xrgb8888_scanout_copy_compatible(mir_format))
             return ConversionPath::direct_copy;
         if (mir_format == mir_pixel_format_rgb_565)
             return ConversionPath::rgb565_expand;
@@ -328,8 +327,8 @@ inline void convert_row_to_rgb565(
 /*
  * Convert a single row from a Mir pixel format to XRGB8888.
  *
- * When the Mir source is mir_pixel_format_xrgb_8888, copy_rows() uses a
- * direct memcpy fast path instead of calling this function.
+ * Scanout-copy-compatible sources are copied by copy_rows() instead of using
+ * this converter.
  */
 inline void convert_row_to_xrgb8888(
     MirPixelFormat format, uint8_t const* source, uint32_t* destination, std::size_t width)
@@ -378,10 +377,8 @@ inline void convert_row_to_xrgb8888(
  * Copy rows from a Mir graphics region to a destination buffer in the
  * specified format, handling row order (top-down or bottom-up).
  *
- * When the Mir source format is mir_pixel_format_xrgb_8888 and the
- * transport format is PixelFormat::xrgb8888, a direct row memcpy is used
- * because the source memory is byte-for-byte compatible with
- * DRM_FORMAT_XRGB8888 on this little-endian target.
+ * Compatible XRGB8888 sources and native RGB565 sources use direct visible-row
+ * copies. All copies respect the source stride and row order.
  */
 inline void copy_rows(
     PixelFormat format, MirPixelFormat mir_format,
@@ -399,7 +396,11 @@ inline void copy_rows(
     for (std::size_t y = 0; y != height; ++y)
     {
         auto* dest_row = destination + y * width * bpp;
-        if (format == PixelFormat::xrgb8888 && mir_format == mir_pixel_format_xrgb_8888)
+        if (format == PixelFormat::xrgb8888 && is_xrgb8888_scanout_copy_compatible(mir_format))
+        {
+            std::memcpy(dest_row, row, width * bpp);
+        }
+        else if (format == PixelFormat::rgb565 && mir_format == mir_pixel_format_rgb_565)
         {
             std::memcpy(dest_row, row, width * bpp);
         }
@@ -414,39 +415,6 @@ inline void copy_rows(
                 reinterpret_cast<uint32_t*>(dest_row), width);
         }
         row += row_order == RowOrder::top_down ? stride : -stride;
-    }
-}
-
-/*
- * Copy rows from an already-decoded RGBA byte buffer (from EGL readback)
- * to a destination buffer in the specified format.
- */
-inline void copy_rows_from_rgba(
-    PixelFormat format, uint8_t const* source,
-    std::size_t width, std::size_t height, RowOrder row_order,
-    uint8_t* destination)
-{
-    if (height == 0)
-        return;
-    auto const* row = source;
-    if (row_order == RowOrder::bottom_up)
-        row += static_cast<std::size_t>(height - 1) * width * 4;
-
-    auto const bpp = bytes_per_pixel(format);
-    for (std::size_t y = 0; y != height; ++y)
-    {
-        auto* dest_row = destination + y * width * bpp;
-        if (format == PixelFormat::rgb565)
-        {
-            convert_row_to_rgb565(mir_pixel_format_abgr_8888, row,
-                reinterpret_cast<uint16_t*>(dest_row), width);
-        }
-        else
-        {
-            convert_row_to_xrgb8888(mir_pixel_format_abgr_8888, row,
-                reinterpret_cast<uint32_t*>(dest_row), width);
-        }
-        row += row_order == RowOrder::top_down ? width * 4 : -width * 4;
     }
 }
 

@@ -9,6 +9,7 @@
  * Transport format is selectable via --pixel-format (rgb565 or xrgb8888).
  */
 #include "gud_screencast_format.h"
+#include "gud_screencast_presenter.h"
 
 #include "mir_toolkit/mir_client_library.h"
 #include "mir_toolkit/mir_buffer_stream.h"
@@ -80,20 +81,6 @@ void managed_status(char const* value)
     (void)ignored;
 }
 
-struct Stats
-{
-    uint64_t received{};
-    uint64_t submitted{};
-    uint64_t presented{};
-    uint64_t dropped{};
-    uint64_t conversion_failures{};
-    uint64_t submit_failures{};
-    mirgud::TimingSummary capture_us{};
-    mirgud::TimingSummary conversion_us{};
-    mirgud::TimingSummary submit_us{};
-    uint64_t conversion_path_counts[5]{}; /* indexed by ConversionPath */
-};
-
 void stop(int)
 {
     stop_signal_received = 1;
@@ -143,148 +130,6 @@ unsigned sync_file_count(pid_t pid)
     closedir(directory);
     return count;
 }
-
-class LatestFramePresenter
-{
-public:
-    explicit LatestFramePresenter(
-        std::function<void(mirgud::Frame const&)> present,
-        std::function<void()> first_presented = {}) :
-        present{std::move(present)}, first_presented{std::move(first_presented)}, worker{[this] { work(); }}
-    {
-    }
-
-    ~LatestFramePresenter()
-    {
-        stop();
-    }
-
-    LatestFramePresenter(LatestFramePresenter const&) = delete;
-    LatestFramePresenter& operator=(LatestFramePresenter const&) = delete;
-
-    void submit(mirgud::Frame frame)
-    {
-        auto incoming = std::unique_ptr<mirgud::Frame>{new mirgud::Frame{std::move(frame)}};
-        {
-            std::lock_guard<std::mutex> lock{mutex};
-            if (stopping)
-                return;
-            ++statistics.submitted;
-            if (pending)
-                ++statistics.dropped;
-            pending = std::move(incoming);
-        }
-        wakeup.notify_one();
-    }
-
-    void conversion_failed()
-    {
-        std::lock_guard<std::mutex> lock{mutex};
-        ++statistics.conversion_failures;
-    }
-
-    void received(uint64_t capture_us, uint64_t conversion_us)
-    {
-        std::lock_guard<std::mutex> lock{mutex};
-        ++statistics.received;
-        statistics.capture_us.add(capture_us);
-        statistics.conversion_us.add(conversion_us);
-        ++statistics.conversion_path_counts[static_cast<unsigned>(conversion_path)];
-    }
-
-    void presented(uint64_t us)
-    {
-        std::lock_guard<std::mutex> lock{mutex};
-        statistics.submit_us.add(us);
-        ++statistics.presented;
-        if (statistics.presented == 1 && first_presented)
-            first_presented();
-    }
-
-    Stats stats() const
-    {
-        std::lock_guard<std::mutex> lock{mutex};
-        return statistics;
-    }
-
-    void set_conversion_path(mirgud::ConversionPath path)
-    {
-        std::lock_guard<std::mutex> lock{mutex};
-        conversion_path = path;
-    }
-
-    void rethrow_failure()
-    {
-        std::exception_ptr failure;
-        {
-            std::lock_guard<std::mutex> lock{mutex};
-            failure = presentation_failure;
-        }
-        if (failure)
-            std::rethrow_exception(failure);
-    }
-
-    void stop()
-    {
-        {
-            std::lock_guard<std::mutex> lock{mutex};
-            if (stopping)
-                return;
-            stopping = true;
-            pending.reset();
-        }
-        wakeup.notify_one();
-        if (worker.joinable())
-            worker.join();
-    }
-
-private:
-    void work()
-    {
-        while (true)
-        {
-            std::unique_ptr<mirgud::Frame> frame;
-            {
-                std::unique_lock<std::mutex> lock{mutex};
-                wakeup.wait(lock, [this] { return stopping || pending; });
-                if (stopping)
-                    return;
-                frame = std::move(pending);
-            }
-            try
-            {
-                auto const submit_start = std::chrono::steady_clock::now();
-                present(*frame);
-                auto const submit_end = std::chrono::steady_clock::now();
-                presented(static_cast<uint64_t>(
-                    std::chrono::duration_cast<std::chrono::microseconds>(submit_end - submit_start).count()));
-            }
-            catch (std::exception const& error)
-            {
-                std::cerr << "mirgud: GUD submission failed: " << error.what() << std::endl;
-                {
-                    std::lock_guard<std::mutex> lock{mutex};
-                    ++statistics.submit_failures;
-                    presentation_failure = std::current_exception();
-                    pending.reset();
-                }
-                running = false;
-                return;
-            }
-        }
-    }
-
-    std::function<void(mirgud::Frame const&)> present;
-    std::function<void()> first_presented;
-    mutable std::mutex mutex;
-    std::condition_variable wakeup;
-    std::unique_ptr<mirgud::Frame> pending;
-    Stats statistics;
-    mirgud::ConversionPath conversion_path{mirgud::ConversionPath::channel_reorder};
-    std::exception_ptr presentation_failure;
-    bool stopping{};
-    std::thread worker;
-};
 
 int open_gud_card()
 {
@@ -855,8 +700,8 @@ public:
             mirgud::Frame frame{width, height, pixel_format,
                 std::vector<uint8_t>(static_cast<std::size_t>(width) * height *
                     mirgud::bytes_per_pixel(pixel_format))};
-            mirgud::copy_rows_from_rgba(pixel_format, bytes.data(), width, height,
-                mirgud::RowOrder::bottom_up, frame.pixels.data());
+            mirgud::copy_rows(pixel_format, mir_source_format(), bytes.data(), width * 4,
+                width, height, mirgud::RowOrder::bottom_up, frame.pixels.data());
             auto const conversion_end = std::chrono::steady_clock::now();
             *capture_us = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
                 conversion_start - capture_start).count());
@@ -885,27 +730,15 @@ private:
     GLenum read_format{};
 
 public:
-    GLenum source_read_format() const { return read_format; }
+    MirPixelFormat mir_source_format() const
+    {
+        return read_format == GL_BGRA_EXT ? mir_pixel_format_argb_8888 : mir_pixel_format_abgr_8888;
+    }
 };
 
-void report(Stats const& stats, pid_t monitor_pid)
+void report(mirgud::Stats const& stats, pid_t monitor_pid, bool final)
 {
-    std::cerr << "mirgud: frames_received=" << stats.received <<
-        " frames_submitted=" << stats.submitted <<
-        " frames_presented=" << stats.presented <<
-        " frames_dropped=" << stats.dropped;
-    if (stats.submitted > 0)
-    {
-        auto const drop_pct = (static_cast<double>(stats.dropped) * 100.0) /
-            static_cast<double>(stats.submitted);
-        std::cerr << " drop_percent=" << drop_pct;
-    }
-    else
-    {
-        std::cerr << " drop_percent=0";
-    }
-    std::cerr << " conversion_failures=" << stats.conversion_failures <<
-        " gud_submit_failures=" << stats.submit_failures;
+    std::cerr << "mirgud: " << mirgud::format_accounting_fields(stats, final);
 
     auto const report_timing = [](char const* label, mirgud::TimingSummary const& ts)
     {
@@ -917,7 +750,8 @@ void report(Stats const& stats, pid_t monitor_pid)
     report_timing("conversion", stats.conversion_us);
     report_timing("submit", stats.submit_us);
 
-    std::cerr << " submit_us_avg=" << mirgud::average(stats.submit_us.total, stats.presented) <<
+    std::cerr << " submit_us_avg=" << mirgud::average(stats.submit_us.total,
+            stats.presented + stats.submit_failures) <<
         " capture_us_avg=" << mirgud::average(stats.capture_us.total, stats.received) <<
         " conversion_us_avg=" << mirgud::average(stats.conversion_us.total, stats.received);
 
@@ -1081,11 +915,17 @@ try
         kms->initial_modeset();
         managed_status("MODESET_COMPLETE");
     }
-    LatestFramePresenter presenter{[&kms](mirgud::Frame const& frame)
+    mirgud::LatestFramePresenter presenter{[&kms](mirgud::Frame const& frame)
     {
         if (kms)
             kms->present(frame);
-    }, [] { managed_status("ACTIVE"); }};
+    }, [] { managed_status("ACTIVE"); }, [] { running = false; }};
+    auto stop_report_rethrow = [&]
+    {
+        presenter.stop();
+        report(presenter.stats(), monitor_pid, true);
+        presenter.rethrow_failure();
+    };
 
     if (pattern)
     {
@@ -1099,12 +939,11 @@ try
             std::this_thread::sleep_for(std::chrono::seconds{1});
             if (std::chrono::steady_clock::now() >= next_report)
             {
-                report(presenter.stats(), monitor_pid);
+                report(presenter.stats(), monitor_pid, false);
                 next_report = std::chrono::steady_clock::now() + std::chrono::seconds{1};
             }
         }
-        presenter.stop();
-        presenter.rethrow_failure();
+        stop_report_rethrow();
         return EXIT_SUCCESS;
     }
 
@@ -1187,10 +1026,11 @@ try
             std::this_thread::sleep_for(std::chrono::milliseconds{100});
             if (std::chrono::steady_clock::now() >= next_report)
             {
-                report(presenter.stats(), monitor_pid);
+                report(presenter.stats(), monitor_pid, false);
                 next_report += std::chrono::seconds{1};
             }
         }
+        stop_report_rethrow();
         return EXIT_SUCCESS;
     }
 
@@ -1273,7 +1113,7 @@ try
             }
             if (std::chrono::steady_clock::now() >= next_report)
             {
-                report(presenter.stats(), monitor_pid);
+                report(presenter.stats(), monitor_pid, false);
                 next_report += std::chrono::seconds{1};
             }
             std::this_thread::sleep_until(start + std::chrono::milliseconds{16 * capture_interval});
@@ -1282,8 +1122,7 @@ try
     else
     {
         EglCapture capture{connection.get(), stream, width, height, pixel_format};
-        presenter.set_conversion_path(mirgud::conversion_path_for(pixel_format,
-            capture.source_read_format() == GL_BGRA_EXT ? mir_pixel_format_argb_8888 : mir_pixel_format_abgr_8888));
+        presenter.set_conversion_path(mirgud::conversion_path_for(pixel_format, capture.mir_source_format()));
         bool first{};
         uint64_t prior_fingerprint{};
         bool have_prior_fingerprint{};
@@ -1314,7 +1153,7 @@ try
             presenter.submit(std::move(frame));
             if (std::chrono::steady_clock::now() >= next_report)
             {
-                report(presenter.stats(), monitor_pid);
+                report(presenter.stats(), monitor_pid, false);
                 next_report += std::chrono::seconds{1};
             }
             std::this_thread::sleep_until(start + std::chrono::milliseconds{16 * capture_interval});
@@ -1326,6 +1165,7 @@ try
     managed_status("PRESENTER_STOP_BEGIN");
     presenter.stop();
     managed_status("PRESENTER_STOP_COMPLETE");
+    report(presenter.stats(), monitor_pid, true);
     presenter.rethrow_failure();
     managed_status("PROCESS_EXIT");
     return EXIT_SUCCESS;
