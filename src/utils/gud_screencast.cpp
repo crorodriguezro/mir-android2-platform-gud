@@ -980,6 +980,7 @@ try
     bool pattern{};
     uint32_t pattern_fps{1};
     uint32_t pattern_duration{};
+    uint32_t benchmark_warmup{};
     std::string pattern_workload{"checkerboard"};
     uint32_t pattern_seed{1};
     std::string pattern_generation{"pregenerated"};
@@ -1011,6 +1012,7 @@ try
         ("pattern", po::bool_switch(&pattern), "generated transport workload (no Mir)")
         ("pattern-fps", po::value<uint32_t>(&pattern_fps), "generated workload rate (default 1)")
         ("pattern-duration", po::value<uint32_t>(&pattern_duration), "generated workload duration in seconds (0 = until stopped)")
+        ("benchmark-warmup", po::value<uint32_t>(&benchmark_warmup), "exclude this many initial seconds from final statistics")
         ("pattern-workload", po::value<std::string>(&pattern_workload),
             "generated workload: solid, checkerboard, gradient, motion, or noise")
         ("pattern-seed", po::value<uint32_t>(&pattern_seed), "deterministic generated workload seed")
@@ -1146,6 +1148,17 @@ try
     auto benchmark_start = std::chrono::steady_clock::now();
     ReportSnapshot previous_report{};
     ReportIdentity report_identity{pixel_format};
+    bool measured{};
+    auto const start_measurement = [&]
+    {
+        if (measured || !presenter.reset_statistics())
+            return false;
+        measured = true;
+        benchmark_start = std::chrono::steady_clock::now();
+        previous_report = {};
+        std::cerr << "mirgud: benchmark measured interval started after warmup_s=" << benchmark_warmup << std::endl;
+        return true;
+    };
     if (pattern)
     {
         report_identity.conversion_path = pixel_format == mirgud::PixelFormat::rgb565 ?
@@ -1213,7 +1226,8 @@ try
         }
         auto next_report = std::chrono::steady_clock::now();
         auto const pattern_start = std::chrono::steady_clock::now();
-        benchmark_start = pattern_start;
+        if (!benchmark_warmup)
+            start_measurement();
         auto next_frame = pattern_start;
         auto const period = std::chrono::microseconds{1000000 / pattern_fps};
         uint64_t generated_frames{};
@@ -1223,6 +1237,15 @@ try
             elapsed_us(pattern_start, std::chrono::steady_clock::now()) <
                 static_cast<uint64_t>(pattern_duration) * 1000000ULL))
         {
+            if (!measured && elapsed_us(pattern_start, std::chrono::steady_clock::now()) >=
+                static_cast<uint64_t>(benchmark_warmup) * 1000000ULL)
+            {
+                if (!start_measurement())
+                {
+                    std::this_thread::sleep_for(std::chrono::milliseconds{1});
+                    continue;
+                }
+            }
             auto const now = std::chrono::steady_clock::now();
             if (now < next_frame)
                 std::this_thread::sleep_until(next_frame);
@@ -1254,7 +1277,7 @@ try
             presenter.record_conversion_path(report_identity.conversion_path);
             ++generated_frames;
             next_frame += period;
-            if (std::chrono::steady_clock::now() >= next_report)
+            if (measured && std::chrono::steady_clock::now() >= next_report)
             {
                 report(presenter.stats(), monitor_pid, false, benchmark_start, &previous_report, report_identity);
                 next_report = std::chrono::steady_clock::now() + std::chrono::seconds{1};
@@ -1424,9 +1447,20 @@ try
         uint64_t prior_fingerprint{};
         bool have_prior_fingerprint{};
         uint64_t frame_number{};
-        benchmark_start = std::chrono::steady_clock::now();
+        auto const capture_start = std::chrono::steady_clock::now();
+        if (!benchmark_warmup)
+            start_measurement();
         while (keep_running())
         {
+            if (!measured && elapsed_us(capture_start, std::chrono::steady_clock::now()) >=
+                static_cast<uint64_t>(benchmark_warmup) * 1000000ULL)
+            {
+                if (!start_measurement())
+                {
+                    std::this_thread::sleep_for(std::chrono::milliseconds{1});
+                    continue;
+                }
+            }
             auto const start = std::chrono::steady_clock::now();
             try
             {
@@ -1479,7 +1513,7 @@ try
                 presenter.capture_failed();
                 throw;
             }
-            if (std::chrono::steady_clock::now() >= next_report)
+            if (measured && std::chrono::steady_clock::now() >= next_report)
             {
                 report(presenter.stats(), monitor_pid, false, benchmark_start, &previous_report, report_identity);
                 next_report += std::chrono::seconds{1};
@@ -1497,9 +1531,20 @@ try
         uint64_t prior_fingerprint{};
         bool have_prior_fingerprint{};
         uint64_t frame_number{};
-        benchmark_start = std::chrono::steady_clock::now();
+        auto const capture_start = std::chrono::steady_clock::now();
+        if (!benchmark_warmup)
+            start_measurement();
         while (keep_running())
         {
+            if (!measured && elapsed_us(capture_start, std::chrono::steady_clock::now()) >=
+                static_cast<uint64_t>(benchmark_warmup) * 1000000ULL)
+            {
+                if (!start_measurement())
+                {
+                    std::this_thread::sleep_for(std::chrono::milliseconds{1});
+                    continue;
+                }
+            }
             auto const start = std::chrono::steady_clock::now();
             try
             {
@@ -1550,7 +1595,7 @@ try
                 presenter.capture_failed();
                 throw;
             }
-            if (std::chrono::steady_clock::now() >= next_report)
+            if (measured && std::chrono::steady_clock::now() >= next_report)
             {
                 report(presenter.stats(), monitor_pid, false, benchmark_start, &previous_report, report_identity);
                 next_report += std::chrono::seconds{1};

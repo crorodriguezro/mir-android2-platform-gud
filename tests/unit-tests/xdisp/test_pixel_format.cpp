@@ -416,6 +416,20 @@ TEST(MirgudPresenter, accounts_for_one_presented_frame)
     EXPECT_TRUE(mirgud::accounting_ok(stats));
 }
 
+TEST(MirgudPresenter, resets_idle_statistics_for_a_measured_interval)
+{
+    mirgud::LatestFramePresenter presenter{[](mirgud::Frame const&) {}};
+    presenter.submit(frame());
+    while (presenter.stats().presented != 1)
+        std::this_thread::yield();
+
+    EXPECT_TRUE(presenter.reset_statistics());
+    auto const stats = presenter.stats();
+    EXPECT_EQ(0u, stats.submitted);
+    EXPECT_EQ(0u, stats.presented);
+    EXPECT_TRUE(mirgud::accounting_ok(stats));
+}
+
 TEST(MirgudPresenter, accounts_for_pending_replacement)
 {
     std::mutex mutex;

@@ -114,6 +114,10 @@ makes motion/noise deterministic. Each frame is generated as one logical RGB
 source and converted afterwards, so both transport formats receive equivalent
 visual content.
 
+`--benchmark-warmup SECONDS` excludes initial activity from the final report.
+The presenter statistics reset only after the previous frame is fully presented,
+so the final accounting and timing summaries cover the measured interval alone.
+
 ## Instrumentation Semantics
 
 All benchmark times use `std::chrono::steady_clock`. `benchmark_elapsed_us` is

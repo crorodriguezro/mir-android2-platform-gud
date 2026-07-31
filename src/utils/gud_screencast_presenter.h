@@ -203,6 +203,15 @@ public:
         return statistics;
     }
 
+    bool reset_statistics()
+    {
+        std::lock_guard<std::mutex> lock{mutex};
+        if (pending || statistics.in_flight)
+            return false;
+        statistics = {};
+        return true;
+    }
+
     void set_conversion_path(ConversionPath path)
     {
         std::lock_guard<std::mutex> lock{mutex};
