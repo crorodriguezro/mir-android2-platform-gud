@@ -34,6 +34,25 @@ enum class PixelFormat
     xrgb8888
 };
 
+enum class PatternWorkload
+{
+    solid,
+    checkerboard,
+    gradient,
+    motion,
+    noise
+};
+
+inline PatternWorkload parse_pattern_workload(std::string const& name)
+{
+    if (name == "solid") return PatternWorkload::solid;
+    if (name == "checkerboard") return PatternWorkload::checkerboard;
+    if (name == "gradient") return PatternWorkload::gradient;
+    if (name == "motion") return PatternWorkload::motion;
+    if (name == "noise") return PatternWorkload::noise;
+    throw std::runtime_error{"pattern-workload must be solid, checkerboard, gradient, motion, or noise"};
+}
+
 inline unsigned bytes_per_pixel(PixelFormat format)
 {
     switch (format)
@@ -212,17 +231,19 @@ struct TimingSummary
         return count > 0 ? total / count : 0;
     }
 
-    /* Approximate percentile from histogram (0.0-100.0). */
+    /* Approximate nearest-rank percentile as a histogram bucket upper bound. */
     uint64_t percentile(double pct) const
     {
         if (count == 0)
             return 0;
-        uint64_t const target = static_cast<uint64_t>(count * pct / 100.0);
+        auto const clamped = std::max(0.0, std::min(100.0, pct));
+        auto rank = static_cast<uint64_t>(std::ceil(clamped * count / 100.0));
+        rank = std::max<uint64_t>(1, std::min<uint64_t>(count, rank));
         uint64_t cumulative{};
         for (unsigned i = 0; i < num_buckets; ++i)
         {
             cumulative += buckets[i];
-            if (cumulative > target)
+            if (cumulative >= rank)
                 return bucket_boundary(i);
         }
         return bucket_boundary(num_buckets - 1);
@@ -634,6 +655,106 @@ inline std::vector<uint8_t> checkerboard(PixelFormat format, uint32_t width, uin
             }
         }
     return pixels;
+}
+
+inline uint32_t pattern_prng(uint32_t value)
+{
+    value ^= value << 13;
+    value ^= value >> 17;
+    value ^= value << 5;
+    return value;
+}
+
+inline std::vector<uint8_t> pattern_rgb888(PatternWorkload workload, uint32_t width,
+                                            uint32_t height, uint64_t frame_number,
+                                            uint32_t seed)
+{
+    if (workload == PatternWorkload::gradient)
+        return gradient_pattern(width, height);
+    std::vector<uint8_t> rgb(static_cast<std::size_t>(width) * height * 3);
+    uint32_t state = seed ^ static_cast<uint32_t>(frame_number) ^
+        static_cast<uint32_t>(frame_number >> 32);
+    for (uint32_t y = 0; y != height; ++y)
+        for (uint32_t x = 0; x != width; ++x)
+        {
+            auto const offset = (static_cast<std::size_t>(y) * width + x) * 3;
+            if (workload == PatternWorkload::solid)
+            {
+                rgb[offset] = 32; rgb[offset + 1] = 128; rgb[offset + 2] = 224;
+            }
+            else if (workload == PatternWorkload::checkerboard)
+            {
+                bool const light = ((x / 40) + (y / 40)) % 2;
+                rgb[offset] = light ? 255 : 0;
+                rgb[offset + 1] = light ? 255 : 64;
+                rgb[offset + 2] = light ? 255 : 192;
+            }
+            else if (workload == PatternWorkload::motion)
+            {
+                auto const position = static_cast<uint32_t>(frame_number % (width ? width : 1));
+                bool const moving = x >= position && x < position + std::min<uint32_t>(width, 80) &&
+                    y >= height / 3 && y < 2 * height / 3;
+                rgb[offset] = moving ? 255 : 16;
+                rgb[offset + 1] = moving ? 192 : 32;
+                rgb[offset + 2] = moving ? 0 : 64;
+            }
+            else
+            {
+                state = pattern_prng(state);
+                rgb[offset] = static_cast<uint8_t>(state);
+                state = pattern_prng(state);
+                rgb[offset + 1] = static_cast<uint8_t>(state);
+                state = pattern_prng(state);
+                rgb[offset + 2] = static_cast<uint8_t>(state);
+            }
+        }
+    return rgb;
+}
+
+inline Frame pattern_frame(PatternWorkload workload, PixelFormat format, uint32_t width,
+                           uint32_t height, uint64_t frame_number, uint32_t seed)
+{
+    auto const rgb = pattern_rgb888(workload, width, height, frame_number, seed);
+    return {width, height, format, format == PixelFormat::rgb565 ?
+        rgb888_to_rgb565(rgb.data(), width, height) : rgb888_to_xrgb8888(rgb.data(), width, height)};
+}
+
+struct XByteSamples
+{
+    uint64_t count{};
+    uint8_t min{255};
+    uint8_t max{};
+    uint64_t zero{};
+    uint64_t ff{};
+    bool constant{true};
+    uint8_t first{};
+
+    void add(uint8_t value)
+    {
+        if (!count) first = value;
+        else if (value != first) constant = false;
+        ++count;
+        min = std::min(min, value);
+        max = std::max(max, value);
+        zero += value == 0;
+        ff += value == 0xff;
+    }
+};
+
+inline void sample_x_bytes(uint8_t const* source, std::ptrdiff_t stride, uint32_t width,
+                           uint32_t height, RowOrder order, XByteSamples* samples,
+                           unsigned limit = 64)
+{
+    if (!source || !width || !height || !limit) return;
+    auto const total = std::min<uint64_t>(limit, static_cast<uint64_t>(width) * height);
+    for (uint64_t i = 0; i != total; ++i)
+    {
+        auto const pixel = i * static_cast<uint64_t>(width) / total;
+        auto const y = static_cast<uint32_t>(pixel / width);
+        auto const x = static_cast<uint32_t>(pixel % width);
+        auto const source_y = order == RowOrder::top_down ? y : height - 1 - y;
+        samples->add(source[static_cast<std::ptrdiff_t>(source_y) * stride + 4 * x + 3]);
+    }
 }
 }
 

@@ -64,6 +64,11 @@ is byte-for-byte identical to `DRM_FORMAT_XRGB8888`. On little-endian targets,
 `mir_pixel_format_argb_8888` is also scanout-copy compatible for visible RGB
 channels: its alpha byte occupies the ignored X byte in XRGB8888.
 
+The direct-copy baseline deliberately preserves that fourth byte. For ARGB it
+is alpha; for Mir XRGB it is X/padding. It is sampled only for bounded
+diagnostic disclosure (`x_byte_*` report fields), because varying values can
+change LZ4 entropy. The benchmark does not clear or normalize it.
+
 Other 4-byte Mir formats require channel reordering:
 - `mir_pixel_format_abgr_8888` → [R, G, B, A] → reorder to [B, G, R, X]
 - `mir_pixel_format_xbgr_8888` → [R, G, B, X] → reorder to [B, G, R, X]
@@ -71,6 +76,16 @@ Other 4-byte Mir formats require channel reordering:
 The EGL fallback path (`EglCapture`) uses `GL_BGRA_EXT` or `GL_RGBA` and
 interprets them as `mir_pixel_format_argb_8888` and `mir_pixel_format_abgr_8888`
 respectively before generic conversion.
+
+## Benchmark Instrumentation Qualification
+
+Benchmark reporting uses a steady monotonic clock and emits cumulative and
+actual-interval rates. Capture timing is split into acquire, conversion,
+release, and full capture-cycle boundaries. Presenter snapshots include
+in-flight work so accounting is valid while the worker is blocked. Final
+reports occur after the presenter stops and therefore require zero in-flight
+frames. End-to-end hardware qualification remains pending; no default format
+has been selected.
 
 ## 2. GUD DRM framebuffer format
 

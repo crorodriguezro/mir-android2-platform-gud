@@ -91,6 +91,31 @@ bool keep_running()
     return running && !stop_signal_received;
 }
 
+template<typename Function>
+class ScopeExit
+{
+public:
+    explicit ScopeExit(Function function) : function{std::move(function)} {}
+    ScopeExit(ScopeExit const&) = delete;
+    ScopeExit& operator=(ScopeExit const&) = delete;
+    ScopeExit(ScopeExit&& other) : function{std::move(other.function)}, active{other.active}
+    {
+        other.active = false;
+    }
+    ~ScopeExit() { if (active) function(); }
+    void release() { active = false; }
+
+private:
+    Function function;
+    bool active{true};
+};
+
+template<typename Function>
+ScopeExit<Function> make_scope_exit(Function function)
+{
+    return ScopeExit<Function>{std::move(function)};
+}
+
 std::system_error system_error(char const* action)
 {
     return std::system_error{errno, std::system_category(), action};
@@ -580,6 +605,36 @@ MirGraphicsRegion graphics_region(MirBufferStream* stream)
     return region;
 }
 
+struct CaptureTimings
+{
+    uint64_t acquire_us{};
+    uint64_t conversion_us{};
+    uint64_t release_us{};
+    uint64_t capture_cycle_us{};
+};
+
+enum class CaptureFailureKind { conversion, release };
+
+class CaptureFailure : public std::runtime_error
+{
+public:
+    CaptureFailure(CaptureFailureKind kind, std::string const& message) :
+        std::runtime_error{message}, kind{kind} {}
+    CaptureFailureKind kind;
+};
+
+class DumpFailure : public std::runtime_error
+{
+public:
+    explicit DumpFailure(std::string const& message) : std::runtime_error{message} {}
+};
+
+uint64_t elapsed_us(std::chrono::steady_clock::time_point start,
+                    std::chrono::steady_clock::time_point end)
+{
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(end - start).count());
+}
+
 class DirectCapture
 {
 public:
@@ -605,33 +660,73 @@ public:
 
     mirgud::SourceFormat const& source_format_info() const { return source_format; }
 
-    mirgud::Frame next(uint64_t* capture_us, uint64_t* conversion_us)
+    mirgud::Frame next(CaptureTimings* timings, mirgud::XByteSamples* x_bytes = nullptr)
     {
-        auto const capture_start = std::chrono::steady_clock::now();
+        auto const cycle_start = std::chrono::steady_clock::now();
+        bool release_attempted{};
+        auto const acquire_start = cycle_start;
         auto const region = graphics_region(stream);
         if (region.width <= 0 || region.height <= 0 || region.stride <= 0)
             throw std::runtime_error{"invalid CPU screencast graphics region"};
         auto const conversion_start = std::chrono::steady_clock::now();
+        timings->acquire_us = elapsed_us(acquire_start, conversion_start);
+        if (x_bytes && pixel_format == mirgud::PixelFormat::xrgb8888 &&
+            source_format.conversion_path == mirgud::ConversionPath::direct_copy)
+            mirgud::sample_x_bytes(reinterpret_cast<uint8_t const*>(region.vaddr), region.stride,
+                static_cast<uint32_t>(region.width), static_cast<uint32_t>(region.height), row_order, x_bytes);
         mirgud::Frame frame{static_cast<uint32_t>(region.width), static_cast<uint32_t>(region.height),
             pixel_format,
             std::vector<uint8_t>(static_cast<std::size_t>(region.width) * region.height *
                 mirgud::bytes_per_pixel(pixel_format))};
         try
         {
-            mirgud::copy_rows(pixel_format, region.pixel_format,
-                reinterpret_cast<uint8_t const*>(region.vaddr), region.stride,
-                region.width, region.height, row_order, frame.pixels.data());
+            try
+            {
+                mirgud::copy_rows(pixel_format, region.pixel_format,
+                    reinterpret_cast<uint8_t const*>(region.vaddr), region.stride,
+                    region.width, region.height, row_order, frame.pixels.data());
+            }
+            catch (std::exception const& error)
+            {
+                throw CaptureFailure{CaptureFailureKind::conversion, error.what()};
+            }
             auto const conversion_end = std::chrono::steady_clock::now();
-            *capture_us = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
-                conversion_start - capture_start).count());
-            *conversion_us = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
-                conversion_end - conversion_start).count());
-            mir_buffer_stream_swap_buffers_sync(stream);
+            timings->conversion_us = elapsed_us(conversion_start, conversion_end);
+            auto const release_start = conversion_end;
+            release_attempted = true;
+            try
+            {
+                mir_buffer_stream_swap_buffers_sync(stream);
+            }
+            catch (...)
+            {
+                auto const release_end = std::chrono::steady_clock::now();
+                timings->release_us = elapsed_us(release_start, release_end);
+                timings->capture_cycle_us = elapsed_us(cycle_start, release_end);
+                throw CaptureFailure{CaptureFailureKind::release, "Mir screencast buffer release failed"};
+            }
+            auto const release_end = std::chrono::steady_clock::now();
+            timings->release_us = elapsed_us(release_start, release_end);
+            timings->capture_cycle_us = elapsed_us(cycle_start, release_end);
             return frame;
         }
         catch (...)
         {
-            mir_buffer_stream_swap_buffers_sync(stream);
+            if (!release_attempted)
+            {
+                auto const release_start = std::chrono::steady_clock::now();
+                release_attempted = true;
+                try
+                {
+                    mir_buffer_stream_swap_buffers_sync(stream);
+                }
+                catch (...)
+                {
+                }
+                auto const release_end = std::chrono::steady_clock::now();
+                timings->release_us = elapsed_us(release_start, release_end);
+                timings->capture_cycle_us = elapsed_us(cycle_start, release_end);
+            }
             throw;
         }
     }
@@ -688,32 +783,53 @@ public:
         }
     }
 
-    mirgud::Frame next(uint64_t* capture_us, uint64_t* conversion_us)
+    mirgud::Frame next(CaptureTimings* timings)
     {
-        auto const capture_start = std::chrono::steady_clock::now();
+        auto const cycle_start = std::chrono::steady_clock::now();
+        bool release_attempted{};
         try
         {
+            auto const acquire_start = cycle_start;
             glReadPixels(0, 0, width, height, read_format, GL_UNSIGNED_BYTE, bytes.data());
             if (glGetError() != GL_NO_ERROR)
                 throw std::runtime_error{"EGL screencast readback failed"};
             auto const conversion_start = std::chrono::steady_clock::now();
+            timings->acquire_us = elapsed_us(acquire_start, conversion_start);
             mirgud::Frame frame{width, height, pixel_format,
                 std::vector<uint8_t>(static_cast<std::size_t>(width) * height *
                     mirgud::bytes_per_pixel(pixel_format))};
-            mirgud::copy_rows(pixel_format, mir_source_format(), bytes.data(), width * 4,
-                width, height, mirgud::RowOrder::bottom_up, frame.pixels.data());
+            try
+            {
+                mirgud::copy_rows(pixel_format, mir_source_format(), bytes.data(), width * 4,
+                    width, height, mirgud::RowOrder::bottom_up, frame.pixels.data());
+            }
+            catch (std::exception const& error)
+            {
+                throw CaptureFailure{CaptureFailureKind::conversion, error.what()};
+            }
             auto const conversion_end = std::chrono::steady_clock::now();
-            *capture_us = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
-                conversion_start - capture_start).count());
-            *conversion_us = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
-                conversion_end - conversion_start).count());
-            if (!eglSwapBuffers(display, surface))
-                throw std::runtime_error{"EGL screencast buffer release failed"};
+            timings->conversion_us = elapsed_us(conversion_start, conversion_end);
+            auto const release_start = conversion_end;
+            release_attempted = true;
+            auto const swapped = eglSwapBuffers(display, surface);
+            auto const release_end = std::chrono::steady_clock::now();
+            timings->release_us = elapsed_us(release_start, release_end);
+            timings->capture_cycle_us = elapsed_us(cycle_start, release_end);
+            if (!swapped)
+                throw CaptureFailure{CaptureFailureKind::release, "EGL screencast buffer release failed"};
             return frame;
         }
         catch (...)
         {
-            eglSwapBuffers(display, surface);
+            if (!release_attempted)
+            {
+                auto const release_start = std::chrono::steady_clock::now();
+                release_attempted = true;
+                eglSwapBuffers(display, surface);
+                auto const release_end = std::chrono::steady_clock::now();
+                timings->release_us = elapsed_us(release_start, release_end);
+                timings->capture_cycle_us = elapsed_us(cycle_start, release_end);
+            }
             throw;
         }
     }
@@ -736,24 +852,83 @@ public:
     }
 };
 
-void report(mirgud::Stats const& stats, pid_t monitor_pid, bool final)
+struct ReportSnapshot
 {
+    std::chrono::steady_clock::time_point timestamp{};
+    uint64_t received{};
+    uint64_t submitted{};
+    uint64_t presented{};
+    uint64_t dropped{};
+    uint64_t cancelled{};
+    uint64_t submit_failures{};
+};
+
+void report(mirgud::Stats const& stats, pid_t monitor_pid, bool final,
+            std::chrono::steady_clock::time_point benchmark_start,
+            ReportSnapshot* previous)
+{
+    auto const now = std::chrono::steady_clock::now();
+    auto const benchmark_elapsed_us = elapsed_us(benchmark_start, now);
+    uint64_t interval_elapsed_us{};
+    uint64_t interval_received{};
+    uint64_t interval_submitted{};
+    uint64_t interval_presented{};
+    uint64_t interval_dropped{};
+    uint64_t interval_cancelled{};
+    uint64_t interval_submit_failures{};
+    if (previous && previous->timestamp != std::chrono::steady_clock::time_point{})
+    {
+        interval_elapsed_us = elapsed_us(previous->timestamp, now);
+        interval_received = mirgud::counter_delta(stats.received, previous->received);
+        interval_submitted = mirgud::counter_delta(stats.submitted, previous->submitted);
+        interval_presented = mirgud::counter_delta(stats.presented, previous->presented);
+        interval_dropped = mirgud::counter_delta(stats.dropped, previous->dropped);
+        interval_cancelled = mirgud::counter_delta(stats.cancelled, previous->cancelled);
+        interval_submit_failures = mirgud::counter_delta(stats.submit_failures, previous->submit_failures);
+    }
+    if (previous)
+        *previous = {now, stats.received, stats.submitted, stats.presented,
+            stats.dropped, stats.cancelled, stats.submit_failures};
     std::cerr << "mirgud: " << mirgud::format_accounting_fields(stats, final);
+    std::cerr << " benchmark_elapsed_us=" << benchmark_elapsed_us <<
+        " benchmark_elapsed_ms=" << benchmark_elapsed_us / 1000 <<
+        " received_fps=" << mirgud::fps(stats.received, benchmark_elapsed_us) <<
+        " submitted_fps=" << mirgud::fps(stats.submitted, benchmark_elapsed_us) <<
+        " presented_fps=" << mirgud::fps(stats.presented, benchmark_elapsed_us) <<
+        " dropped_fps=" << mirgud::fps(stats.dropped, benchmark_elapsed_us) <<
+        " cancelled_fps=" << mirgud::fps(stats.cancelled, benchmark_elapsed_us) <<
+        " submit_failure_fps=" << mirgud::fps(stats.submit_failures, benchmark_elapsed_us) <<
+        " interval_elapsed_us=" << interval_elapsed_us <<
+        " interval_received=" << interval_received <<
+        " interval_submitted=" << interval_submitted <<
+        " interval_presented=" << interval_presented <<
+        " interval_dropped=" << interval_dropped <<
+        " interval_cancelled=" << interval_cancelled <<
+        " interval_submit_failures=" << interval_submit_failures <<
+        " interval_received_fps=" << mirgud::fps(interval_received, interval_elapsed_us) <<
+        " interval_submitted_fps=" << mirgud::fps(interval_submitted, interval_elapsed_us) <<
+        " interval_presented_fps=" << mirgud::fps(interval_presented, interval_elapsed_us);
 
     auto const report_timing = [](char const* label, mirgud::TimingSummary const& ts)
     {
-        std::cerr << " " << label << "_us[min=" << ts.min <<
-            " avg=" << ts.average() << " max=" << ts.max <<
-            " p50=" << ts.percentile(50.0) << " p95=" << ts.percentile(95.0) << "]";
+        std::cerr << " " << label << "_us_min=" << ts.min <<
+            " " << label << "_us_avg=" << ts.average() <<
+            " " << label << "_us_max=" << ts.max <<
+            " " << label << "_us_p50=" << ts.percentile(50.0) <<
+            " " << label << "_us_p95=" << ts.percentile(95.0);
     };
-    report_timing("capture", stats.capture_us);
+    report_timing("acquire", stats.acquire_us);
     report_timing("conversion", stats.conversion_us);
+    report_timing("release", stats.release_us);
+    report_timing("capture_cycle", stats.capture_cycle_us);
     report_timing("submit", stats.submit_us);
 
     std::cerr << " submit_us_avg=" << mirgud::average(stats.submit_us.total,
             stats.presented + stats.submit_failures) <<
-        " capture_us_avg=" << mirgud::average(stats.capture_us.total, stats.received) <<
-        " conversion_us_avg=" << mirgud::average(stats.conversion_us.total, stats.received);
+        " acquire_us_avg=" << mirgud::average(stats.acquire_us.total, stats.received) <<
+        " conversion_us_avg=" << mirgud::average(stats.conversion_us.total, stats.received) <<
+        " release_us_avg=" << mirgud::average(stats.release_us.total, stats.received) <<
+        " capture_cycle_us_avg=" << mirgud::average(stats.capture_cycle_us.total, stats.received);
 
     for (unsigned i = 0; i < 5; ++i)
     {
@@ -782,6 +957,10 @@ try
     std::string source_mode{"primary"};
     std::string pixel_format_str{"rgb565"};
     bool pattern{};
+    uint32_t pattern_fps{1};
+    uint32_t pattern_duration{};
+    std::string pattern_workload{"checkerboard"};
+    uint32_t pattern_seed{1};
     bool quality{};
     bool no_gud{};
     bool extend_hold{};
@@ -804,7 +983,12 @@ try
         ("size,s", po::value<std::vector<uint32_t>>()->multitoken(), "GUD/screencast size (default 1280 720)")
         ("cap-interval", po::value<uint32_t>(&capture_interval), "capture every N display intervals")
         ("monitor-pid", po::value<pid_t>(&monitor_pid), "sample this compositor PID's fd/sync_file counts")
-        ("pattern", po::bool_switch(&pattern), "generated transport workload (static checkerboard, no Mir)")
+        ("pattern", po::bool_switch(&pattern), "generated transport workload (no Mir)")
+        ("pattern-fps", po::value<uint32_t>(&pattern_fps), "generated workload rate (default 1)")
+        ("pattern-duration", po::value<uint32_t>(&pattern_duration), "generated workload duration in seconds (0 = until stopped)")
+        ("pattern-workload", po::value<std::string>(&pattern_workload),
+            "generated workload: solid, checkerboard, gradient, motion, or noise")
+        ("pattern-seed", po::value<uint32_t>(&pattern_seed), "deterministic generated workload seed")
         ("quality", po::bool_switch(&quality),
             "generate deterministic quality reference patterns and dump both RGB565 and XRGB8888 PPMs; requires --dump-frame")
         ("no-gud", po::bool_switch(&no_gud), "Mir source/copy/conversion benchmark: copy/release frames without opening GUD")
@@ -832,6 +1016,10 @@ try
     }
     if (capture_interval == 0)
         throw std::runtime_error{"cap-interval must be positive"};
+    if (pattern_fps == 0)
+        throw std::runtime_error{"pattern-fps must be positive"};
+    if (pattern_fps > 1000000)
+        throw std::runtime_error{"pattern-fps must not exceed 1000000"};
     if (variables.count("size"))
     {
         auto const size = variables["size"].as<std::vector<uint32_t>>();
@@ -867,6 +1055,7 @@ try
         throw std::runtime_error{"managed fd options require --managed"};
 
     mirgud::PixelFormat pixel_format = mirgud::parse_pixel_format(pixel_format_str);
+    auto const workload = mirgud::parse_pattern_workload(pattern_workload);
 
     managed_mode = managed;
     managed_status_fd = status_fd;
@@ -920,29 +1109,86 @@ try
         if (kms)
             kms->present(frame);
     }, [] { managed_status("ACTIVE"); }, [] { running = false; }};
+    auto benchmark_start = std::chrono::steady_clock::now();
+    ReportSnapshot previous_report{};
+    bool final_reported{};
     auto stop_report_rethrow = [&]
     {
-        presenter.stop();
-        report(presenter.stats(), monitor_pid, true);
+        if (!final_reported)
+        {
+            presenter.stop();
+            report(presenter.stats(), monitor_pid, true, benchmark_start, &previous_report);
+            final_reported = true;
+        }
         presenter.rethrow_failure();
     };
+    auto finalizer = make_scope_exit([&]
+    {
+        if (!final_reported)
+        {
+            try
+            {
+                presenter.stop();
+                report(presenter.stats(), monitor_pid, true, benchmark_start, &previous_report);
+                final_reported = true;
+                try
+                {
+                    presenter.rethrow_failure();
+                }
+                catch (std::exception const& error)
+                {
+                    std::cerr << "mirgud: presenter failure during finalization: " << error.what() << std::endl;
+                }
+            }
+            catch (std::exception const& error)
+            {
+                std::cerr << "mirgud: final report failure: " << error.what() << std::endl;
+            }
+        }
+    });
 
     if (pattern)
     {
-        std::cerr << "mirgud: Stage A checkerboard started; verify it on HDMI before Stage B" << std::endl;
-        auto const frame = mirgud::Frame{width, height, pixel_format,
-            mirgud::checkerboard(pixel_format, width, height)};
+        std::cerr << "mirgud: generated workload=" << pattern_workload <<
+            " fps=" << pattern_fps << " duration_s=" << pattern_duration << std::endl;
         auto next_report = std::chrono::steady_clock::now();
-        while (keep_running())
+        auto const pattern_start = std::chrono::steady_clock::now();
+        benchmark_start = pattern_start;
+        auto next_frame = pattern_start;
+        auto const period = std::chrono::microseconds{1000000 / pattern_fps};
+        uint64_t generated_frames{};
+        uint64_t missed_pattern_deadlines{};
+        uint64_t maximum_schedule_lateness_us{};
+        while (keep_running() && (!pattern_duration ||
+            elapsed_us(pattern_start, std::chrono::steady_clock::now()) <
+                static_cast<uint64_t>(pattern_duration) * 1000000ULL))
         {
-            presenter.submit(frame);
-            std::this_thread::sleep_for(std::chrono::seconds{1});
+            auto const now = std::chrono::steady_clock::now();
+            if (now < next_frame)
+                std::this_thread::sleep_until(next_frame);
+            auto const scheduled = next_frame;
+            auto const submitted_at = std::chrono::steady_clock::now();
+            if (submitted_at > scheduled)
+            {
+                auto const lateness = elapsed_us(scheduled, submitted_at);
+                maximum_schedule_lateness_us = std::max(maximum_schedule_lateness_us, lateness);
+                if (lateness >= static_cast<uint64_t>(period.count()))
+                    ++missed_pattern_deadlines;
+            }
+            presenter.submit(mirgud::pattern_frame(workload, pixel_format, width, height,
+                generated_frames, pattern_seed));
+            ++generated_frames;
+            next_frame += period;
             if (std::chrono::steady_clock::now() >= next_report)
             {
-                report(presenter.stats(), monitor_pid, false);
+                report(presenter.stats(), monitor_pid, false, benchmark_start, &previous_report);
                 next_report = std::chrono::steady_clock::now() + std::chrono::seconds{1};
             }
         }
+        std::cerr << "mirgud: requested_pattern_fps=" << pattern_fps <<
+            " generated_frames=" << generated_frames <<
+            " missed_pattern_deadlines=" << missed_pattern_deadlines <<
+            " maximum_schedule_lateness_us=" << maximum_schedule_lateness_us << std::endl;
         stop_report_rethrow();
         return EXIT_SUCCESS;
     }
@@ -1026,7 +1272,7 @@ try
             std::this_thread::sleep_for(std::chrono::milliseconds{100});
             if (std::chrono::steady_clock::now() >= next_report)
             {
-                report(presenter.stats(), monitor_pid, false);
+                report(presenter.stats(), monitor_pid, false, benchmark_start, &previous_report);
                 next_report += std::chrono::seconds{1};
             }
         }
@@ -1079,17 +1325,28 @@ try
         uint64_t prior_fingerprint{};
         bool have_prior_fingerprint{};
         uint64_t frame_number{};
+        benchmark_start = std::chrono::steady_clock::now();
         while (keep_running())
         {
             auto const start = std::chrono::steady_clock::now();
             try
             {
-                uint64_t capture_us{};
-                uint64_t conversion_us{};
-                auto frame = direct->next(&capture_us, &conversion_us);
-                presenter.received(capture_us, conversion_us);
+                CaptureTimings timings{};
+                mirgud::XByteSamples x_bytes;
+                auto frame = direct->next(&timings, frame_number < 32 ? &x_bytes : nullptr);
+                presenter.received(timings.acquire_us, timings.conversion_us,
+                    timings.release_us, timings.capture_cycle_us);
+                presenter.add_x_byte_samples(x_bytes);
                 ++frame_number;
-                dump_completed_frame(frame, frame_number);
+                try
+                {
+                    dump_completed_frame(frame, frame_number);
+                }
+                catch (...)
+                {
+                    presenter.dump_failed();
+                    throw DumpFailure{"PPM dump failed"};
+                }
                 if (no_gud && (frame_number == 1 || frame_number % 60 == 0))
                 {
                     auto const fingerprint = sampled_fingerprint(frame);
@@ -1106,14 +1363,26 @@ try
                 }
                 presenter.submit(std::move(frame));
             }
+            catch (DumpFailure const&)
+            {
+                throw;
+            }
+            catch (CaptureFailure const& error)
+            {
+                if (error.kind == CaptureFailureKind::conversion)
+                    presenter.conversion_failed();
+                else
+                    presenter.release_failed();
+                throw;
+            }
             catch (...)
             {
-                presenter.conversion_failed();
+                presenter.capture_failed();
                 throw;
             }
             if (std::chrono::steady_clock::now() >= next_report)
             {
-                report(presenter.stats(), monitor_pid, false);
+                report(presenter.stats(), monitor_pid, false, benchmark_start, &previous_report);
                 next_report += std::chrono::seconds{1};
             }
             std::this_thread::sleep_until(start + std::chrono::milliseconds{16 * capture_interval});
@@ -1127,33 +1396,62 @@ try
         uint64_t prior_fingerprint{};
         bool have_prior_fingerprint{};
         uint64_t frame_number{};
+        benchmark_start = std::chrono::steady_clock::now();
         while (keep_running())
         {
             auto const start = std::chrono::steady_clock::now();
-            uint64_t capture_us{};
-            uint64_t conversion_us{};
-            auto frame = capture.next(&capture_us, &conversion_us);
-            presenter.received(capture_us, conversion_us);
-            ++frame_number;
-            dump_completed_frame(frame, frame_number);
-            if (no_gud && (frame_number == 1 || frame_number % 60 == 0))
+            try
             {
-                auto const fingerprint = sampled_fingerprint(frame);
-                std::cerr << "mirgud: xdisp frame=" << frame_number << " hash=0x" << std::hex << fingerprint <<
-                    std::dec << " changed=" << (!have_prior_fingerprint || fingerprint != prior_fingerprint) <<
-                    " format=" << mirgud::format_name(frame.format) << std::endl;
-                prior_fingerprint = fingerprint;
-                have_prior_fingerprint = true;
+                CaptureTimings timings{};
+                auto frame = capture.next(&timings);
+                presenter.received(timings.acquire_us, timings.conversion_us,
+                    timings.release_us, timings.capture_cycle_us);
+                ++frame_number;
+                try
+                {
+                    dump_completed_frame(frame, frame_number);
+                }
+                catch (...)
+                {
+                    presenter.dump_failed();
+                    throw DumpFailure{"PPM dump failed"};
+                }
+                if (no_gud && (frame_number == 1 || frame_number % 60 == 0))
+                {
+                    auto const fingerprint = sampled_fingerprint(frame);
+                    std::cerr << "mirgud: xdisp frame=" << frame_number << " hash=0x" << std::hex << fingerprint <<
+                        std::dec << " changed=" << (!have_prior_fingerprint || fingerprint != prior_fingerprint) <<
+                        " format=" << mirgud::format_name(frame.format) << std::endl;
+                    prior_fingerprint = fingerprint;
+                    have_prior_fingerprint = true;
+                }
+                if (!first)
+                {
+                    std::cerr << "mirgud: first GPU-complete virtual frame read back and converted" << std::endl;
+                    first = true;
+                }
+                presenter.submit(std::move(frame));
             }
-            if (!first)
+            catch (DumpFailure const&)
             {
-                std::cerr << "mirgud: first GPU-complete virtual frame read back and converted" << std::endl;
-                first = true;
+                throw;
             }
-            presenter.submit(std::move(frame));
+            catch (CaptureFailure const& error)
+            {
+                if (error.kind == CaptureFailureKind::conversion)
+                    presenter.conversion_failed();
+                else
+                    presenter.release_failed();
+                throw;
+            }
+            catch (...)
+            {
+                presenter.capture_failed();
+                throw;
+            }
             if (std::chrono::steady_clock::now() >= next_report)
             {
-                report(presenter.stats(), monitor_pid, false);
+                report(presenter.stats(), monitor_pid, false, benchmark_start, &previous_report);
                 next_report += std::chrono::seconds{1};
             }
             std::this_thread::sleep_until(start + std::chrono::milliseconds{16 * capture_interval});
@@ -1165,8 +1463,13 @@ try
     managed_status("PRESENTER_STOP_BEGIN");
     presenter.stop();
     managed_status("PRESENTER_STOP_COMPLETE");
-    report(presenter.stats(), monitor_pid, true);
+    if (!final_reported)
+    {
+        report(presenter.stats(), monitor_pid, true, benchmark_start, &previous_report);
+        final_reported = true;
+    }
     presenter.rethrow_failure();
+    finalizer.release();
     managed_status("PROCESS_EXIT");
     return EXIT_SUCCESS;
 }

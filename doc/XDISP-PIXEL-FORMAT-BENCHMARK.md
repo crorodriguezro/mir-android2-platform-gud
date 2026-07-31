@@ -4,8 +4,8 @@
 
 Benchmark RGB565 vs XRGB8888 pixel formats on the OnePlus 6 -> Mir ->
 GUD -> USB -> Pi -> HDMI architecture, collecting apples-to-apples measurements
-under the strict <=12,800-byte USB payload cap, and determine the recommended
-default format.
+under the strict <=12,800-byte USB payload cap. Default format decision:
+**PENDING HARDWARE BENCHMARK**.
 
 ## Architecture
 
@@ -98,6 +98,39 @@ The `--pattern` flag sends a static checkerboard frame repeatedly. It is a
 generated transport workload and does not benchmark Mir capture. With
 `--no-gud`, it exercises no GUD transport; without `--no-gud`, it measures
 the generated-frame transport path including USB transfer.
+
+`--pattern-fps N` defaults to 1 Hz and `--pattern-duration SECONDS` defaults to
+0 (until stopped). The 1 Hz default is a static commit test, not a throughput
+benchmark. Higher-rate modes are transport stress tests. Workloads are
+`solid`, `checkerboard`, `gradient`, `motion`, and `noise`; `--pattern-seed N`
+makes motion/noise deterministic. Each frame is generated as one logical RGB
+source and converted afterwards, so both transport formats receive equivalent
+visual content.
+
+## Instrumentation Semantics
+
+All benchmark times use `std::chrono::steady_clock`. `benchmark_elapsed_us` is
+measured from immediately before the first workload submission/capture attempt.
+Final rates use `count * 1000000 / benchmark_elapsed_us`, returning zero for a
+zero duration. Periodic reports contain cumulative counters/rates and deltas
+from the actual previous report timestamp; they do not assume a one-second
+interval.
+
+Capture timing fields are non-overlapping: `acquire_us` covers Mir region
+obtain/validation or `glReadPixels`; `conversion_us` covers owned-frame
+allocation and conversion/copy; `release_us` covers Mir swap or
+`eglSwapBuffers`; `capture_cycle_us` covers all three. Histogram percentiles
+use nearest-rank selection and are approximate bucket upper bounds.
+
+Snapshots include `frames_in_flight`, with the invariant `submitted =
+presented + dropped + cancelled + gud_submit_failures + in_flight`. The final
+report is emitted after `presenter.stop()` and requires zero in-flight frames.
+Failure counters are classified at their owning boundary: capture, conversion,
+release, dump, GUD submit, and lifecycle callback failures.
+
+For direct Mir ARGB8888-to-XRGB8888 copies, the source alpha byte is transported
+as the ignored X byte. This can affect LZ4 entropy. Bounded sampling reports
+its range, constancy, and 0x00/0xff percentages; it does not modify the byte.
 
 ### Phase 6: Full Lomiri Extend Benchmarks
 

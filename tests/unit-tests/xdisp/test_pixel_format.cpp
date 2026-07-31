@@ -245,8 +245,29 @@ TEST(MirgudTiming, uses_explicit_denominators_and_bounded_summary)
     EXPECT_EQ(10u, summary.min);
     EXPECT_EQ(30u, summary.max);
     EXPECT_EQ(20u, summary.average());
-    EXPECT_GT(summary.percentile(50.0), 0u);
-    EXPECT_GT(summary.percentile(95.0), 0u);
+    EXPECT_EQ(10u, summary.percentile(0.0));
+    EXPECT_EQ(20u, summary.percentile(50.0));
+    EXPECT_EQ(30u, summary.percentile(95.0));
+    EXPECT_EQ(30u, summary.percentile(100.0));
+}
+
+TEST(MirgudTiming, uses_nearest_rank_percentiles)
+{
+    mirgud::TimingSummary summary;
+    for (unsigned i = 0; i != 20; ++i)
+        summary.add(i < 10 ? 10 : 100);
+    EXPECT_EQ(10u, summary.percentile(50.0));
+    EXPECT_EQ(100u, summary.percentile(95.0)); // ceil(.95 * 20) == 19
+    EXPECT_EQ(100u, summary.percentile(100.0));
+}
+
+TEST(MirgudTiming, calculates_zero_and_elapsed_rates)
+{
+    EXPECT_EQ(0u, mirgud::fps(100, 0));
+    EXPECT_EQ(60u, mirgud::fps(60, 1000000));
+    EXPECT_EQ(40u, mirgud::fps(100, 2500000));
+    EXPECT_EQ(7u, mirgud::counter_delta(12, 5));
+    EXPECT_EQ(0u, mirgud::counter_delta(5, 12));
 }
 
 TEST(MirgudQuality, deterministic_pattern_converts_from_one_reference)
@@ -262,6 +283,44 @@ TEST(MirgudQuality, deterministic_pattern_converts_from_one_reference)
     EXPECT_EQ(reference, mirgud::frame_to_rgb888(xrgb8888_frame));
     EXPECT_NE(reference, mirgud::frame_to_rgb888(rgb565_frame));
     EXPECT_EQ(48u, mirgud::frame_to_rgb888(rgb565_frame).size());
+}
+
+TEST(MirgudPattern, deterministic_seed_and_format_conversion_share_rgb_source)
+{
+    auto const first = mirgud::pattern_rgb888(mirgud::PatternWorkload::noise, 8, 4, 7, 99);
+    EXPECT_EQ(first, mirgud::pattern_rgb888(mirgud::PatternWorkload::noise, 8, 4, 7, 99));
+    EXPECT_NE(first, mirgud::pattern_rgb888(mirgud::PatternWorkload::noise, 8, 4, 7, 100));
+    EXPECT_EQ(mirgud::pattern_rgb888(mirgud::PatternWorkload::motion, 8, 4, 3, 9),
+        mirgud::pattern_rgb888(mirgud::PatternWorkload::motion, 8, 4, 3, 9));
+
+    auto const rgb565 = mirgud::pattern_frame(mirgud::PatternWorkload::checkerboard,
+        mirgud::PixelFormat::rgb565, 8, 4, 0, 1);
+    auto const xrgb = mirgud::pattern_frame(mirgud::PatternWorkload::checkerboard,
+        mirgud::PixelFormat::xrgb8888, 8, 4, 0, 1);
+    EXPECT_EQ(mirgud::frame_to_rgb888(xrgb), mirgud::pattern_rgb888(
+        mirgud::PatternWorkload::checkerboard, 8, 4, 0, 1));
+    EXPECT_EQ(96u, mirgud::frame_to_rgb888(rgb565).size());
+    EXPECT_THROW(mirgud::parse_pattern_workload("invalid"), std::runtime_error);
+}
+
+TEST(MirgudXByteSamples, tracks_constant_and_varying_bounded_samples)
+{
+    std::vector<uint8_t> zero(4 * 8, 0);
+    mirgud::XByteSamples samples;
+    mirgud::sample_x_bytes(zero.data(), 32, 8, 1, mirgud::RowOrder::top_down, &samples, 4);
+    EXPECT_EQ(4u, samples.count);
+    EXPECT_TRUE(samples.constant);
+    EXPECT_EQ(0u, samples.min);
+    EXPECT_EQ(4u, samples.zero);
+
+    std::vector<uint8_t> varying(4 * 8, 0);
+    for (unsigned i = 0; i != 8; ++i)
+        varying[4 * i + 3] = i == 7 ? 0xff : static_cast<uint8_t>(i);
+    mirgud::XByteSamples varied;
+    mirgud::sample_x_bytes(varying.data(), 32, 8, 1, mirgud::RowOrder::top_down, &varied, 8);
+    EXPECT_FALSE(varied.constant);
+    EXPECT_EQ(0xffu, varied.max);
+    EXPECT_EQ(1u, varied.ff);
 }
 
 TEST(MirgudPresenter, accounts_for_one_presented_frame)
@@ -332,6 +391,38 @@ TEST(MirgudPresenter, accounts_for_pending_replacement)
     EXPECT_TRUE(mirgud::accounting_ok(stats));
 }
 
+TEST(MirgudPresenter, snapshot_is_accounting_valid_while_presenting)
+{
+    std::mutex mutex;
+    std::condition_variable wakeup;
+    bool entered{};
+    bool release{};
+    mirgud::LatestFramePresenter presenter{[&](mirgud::Frame const&)
+    {
+        std::unique_lock<std::mutex> lock{mutex};
+        entered = true;
+        wakeup.notify_one();
+        wakeup.wait(lock, [&] { return release; });
+    }};
+    presenter.submit(frame());
+    {
+        std::unique_lock<std::mutex> lock{mutex};
+        wakeup.wait(lock, [&] { return entered; });
+    }
+    auto const active = presenter.stats();
+    EXPECT_EQ(1u, active.in_flight);
+    EXPECT_EQ(0u, active.presented);
+    EXPECT_TRUE(mirgud::accounting_ok(active));
+    {
+        std::lock_guard<std::mutex> lock{mutex};
+        release = true;
+    }
+    wakeup.notify_one();
+    presenter.stop();
+    EXPECT_EQ(0u, presenter.stats().in_flight);
+    EXPECT_TRUE(mirgud::accounting_ok(presenter.stats()));
+}
+
 TEST(MirgudPresenter, cancels_pending_frame_once_during_stop)
 {
     std::mutex mutex;
@@ -399,6 +490,27 @@ TEST(MirgudPresenter, records_failed_presentation_attempts)
     EXPECT_THROW(presenter.rethrow_failure(), std::runtime_error);
 }
 
+TEST(MirgudPresenter, separates_first_presented_callback_failure)
+{
+    mirgud::LatestFramePresenter presenter{[](mirgud::Frame const&) {}, []
+    {
+        throw std::runtime_error{"lifecycle callback failed"};
+    }};
+    presenter.submit(frame());
+    while (!presenter.stats().lifecycle_callback_failures)
+        std::this_thread::yield();
+    presenter.stop();
+
+    auto const stats = presenter.stats();
+    EXPECT_EQ(1u, stats.submitted);
+    EXPECT_EQ(1u, stats.presented);
+    EXPECT_EQ(0u, stats.submit_failures);
+    EXPECT_EQ(1u, stats.lifecycle_callback_failures);
+    EXPECT_EQ(0u, stats.in_flight);
+    EXPECT_TRUE(mirgud::accounting_ok(stats));
+    EXPECT_THROW(presenter.rethrow_failure(), std::runtime_error);
+}
+
 TEST(MirgudPresenter, reports_zero_denominator_percentages_and_final_accounting)
 {
     mirgud::Stats stats;
@@ -406,8 +518,8 @@ TEST(MirgudPresenter, reports_zero_denominator_percentages_and_final_accounting)
     EXPECT_DOUBLE_EQ(0.0, mirgud::percent(stats.cancelled, stats.submitted));
     auto const report = mirgud::format_accounting_fields(stats, true);
     EXPECT_NE(std::string::npos, report.find("report_kind=final"));
-    EXPECT_NE(std::string::npos, report.find("final=1"));
+    EXPECT_NE(std::string::npos, report.find("final=true"));
     EXPECT_NE(std::string::npos, report.find("frames_cancelled=0"));
-    EXPECT_NE(std::string::npos, report.find("accounting_ok=1"));
+    EXPECT_NE(std::string::npos, report.find("accounting_ok=true"));
 }
 }
