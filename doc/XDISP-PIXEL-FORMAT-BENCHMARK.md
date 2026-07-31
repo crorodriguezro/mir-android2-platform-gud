@@ -2,7 +2,7 @@
 
 ## Objective
 
-Benchmark RGB565 vs XRGB8888 pixel formats on the proven OnePlus 6 -> Mir ->
+Benchmark RGB565 vs XRGB8888 pixel formats on the OnePlus 6 -> Mir ->
 GUD -> USB -> Pi -> HDMI architecture, collecting apples-to-apples measurements
 under the strict <=12,800-byte USB payload cap, and determine the recommended
 default format.
@@ -17,7 +17,7 @@ mirgud conversion        Yes        Yes (--pixel-format rgb565|xrgb8888)
 GUD DRM framebuffer      Yes        Yes (DRM_FORMAT_XRGB8888 added)
 host GUD support         Yes        Yes (GUD_PIXEL_FORMAT_XRGB8888 added)
 Pi gadget support        Yes        Yes (GUD_PIXEL_FORMAT_XRGB8888 advertised)
-Pi scanout support       Yes        Yes (DrmFourcc::XRGB8888 added)
+Pi scanout support       Implemented (qualification pending)  Implemented (qualification pending)
 ```
 
 ## Key Constraint: 12,800-byte USB Payload Cap
@@ -42,22 +42,23 @@ The Mir screencast buffer format is queried at runtime via
 `mir_connection_get_available_surface_formats()`. The format is recorded in
 the `SourceFormat` struct and reported via `conversion_path`.
 
-On this little-endian target, the byte-for-byte compatibility between Mir
+On little-endian targets, the scanout-copy compatibility for visible RGB channels between Mir
 source formats and `DRM_FORMAT_XRGB8888` is:
 
 | Mir pixel format enum          | Integer value  | LE memory layout | DRM_FORMAT_XRGB8888 compatible? |
 |--------------------------------|----------------|-------------------|---------------------------------|
 | `mir_pixel_format_xrgb_8888`   | 0x00RRGGBB     | B, G, R, X        | YES (direct memcpy)             |
 | `mir_pixel_format_xbgr_8888`   | 0x00BBGGRR     | R, G, B, X        | No (channel reorder)            |
-| `mir_pixel_format_argb_8888`   | 0xAARRGGBB     | B, G, R, A        | No (channel reorder)            |
+| `mir_pixel_format_argb_8888`   | 0xAARRGGBB     | B, G, R, A        | Yes (visible RGB direct copy)   |
 | `mir_pixel_format_abgr_8888`   | 0xAABBGGRR     | R, G, B, A        | No (channel reorder)            |
 | `mir_pixel_format_rgb_888`     | N/A            | R, G, B           | No (conversion)                 |
 | `mir_pixel_format_bgr_888`     | N/A            | B, G, R           | No (conversion)                 |
 | `mir_pixel_format_rgb_565`     | 16-bit         | R:G:B 5:6:5       | No (expand)                     |
 
-`mir_pixel_format_xrgb_8888` is the only Mir format whose little-endian
-memory layout is byte-for-byte identical to `DRM_FORMAT_XRGB8888` (both are
-integer `0x00RRGGBB`, which on LE is memory `[B, G, R, X]`).
+`mir_pixel_format_xrgb_8888` is byte-for-byte identical to
+`DRM_FORMAT_XRGB8888`. `mir_pixel_format_argb_8888` is scanout-copy compatible
+for visible RGB channels on little-endian targets: its alpha occupies the XRGB
+destination's ignored X byte. The formats are not semantically identical.
 
 ## Conversion Paths
 
@@ -66,7 +67,7 @@ for each frame:
 
 | Path               | Condition                              | CPU cost |
 |--------------------|----------------------------------------|----------|
-| `direct-copy`      | Mir source is `xrgb_8888`, transport is XRGB8888 | memcpy only |
+| `direct-copy`      | Mir `xrgb_8888`, or `argb_8888` on LE, to XRGB8888 | memcpy visible rows |
 | `channel-reorder`  | 4-byte Mir source, transport is XRGB8888 | byte shuffle |
 | `rgb565-pack`      | Any source, transport is RGB565        | pack to 16-bit |
 | `rgb565-expand`    | RGB565 source, transport is XRGB8888 | expand to 32-bit |
@@ -144,11 +145,13 @@ python3 doc/compare_frames.py /tmp/quality.photo.rgb565.ppm /tmp/quality.photo.x
 
 ## Instrumentation
 
-The mirgud client reports per-second statistics:
+The mirgud client reports periodic (`final=false`) and authoritative shutdown
+(`final=true`) statistics:
 
 ```
-mirgud: frames_received=N frames_submitted=N frames_presented=N frames_dropped=N
-        drop_percent=X.X conversion_failures=N gud_submit_failures=N
+mirgud: report_kind=final final=true frames_received=N frames_submitted=N
+        frames_presented=N frames_dropped=N frames_cancelled=N drop_percent=X.X
+        cancellation_percent=X.X conversion_failures=N gud_submit_failures=N accounting_ok=true
         capture_us[min=N avg=N max=N p50=N p95=N]
         conversion_us[min=N avg=N max=N p50=N p95=N]
         submit_us[min=N avg=N max=N p50=N p95=N]
@@ -159,12 +162,12 @@ mirgud: frames_received=N frames_submitted=N frames_presented=N frames_dropped=N
 
 Denominator rules:
 - `capture_us_avg` and `conversion_us_avg` are divided by `frames_received`
-- `submit_us_avg` is divided by `frames_presented` (not `frames_received`)
+- `submit_us_avg` is divided by `frames_presented + gud_submit_failures`
 
 Timing fields:
 - `capture_us`: Time to read a frame from Mir (CPU mapping or EGL readback)
 - `conversion_us`: Time to convert pixels to the transport format
-- `submit_us`: Time to submit a frame to GUD (USB transfer)
+- `submit_us`: Time for every GUD presentation attempt, including a throwing attempt
 
 Each timing field reports min, average, max, approximate p50, and approximate
 p95 from a bounded 16-bucket histogram. No per-frame vectors are allocated.
@@ -193,6 +196,13 @@ The `compare_frames.py` script reports:
 - Gradient continuity diagnostic (fully-identical rows/columns, labeled as
   diagnostic only, not as "banding severity")
 
+EGL source interpretation is explicit: `GL_RGBA` bytes are interpreted as Mir
+`ABGR8888`; `GL_BGRA_EXT` bytes are interpreted as Mir `ARGB8888`.
+
+Final accounting uses `submitted = presented + dropped + cancelled +
+gud_submit_failures`. `drop_percent` is `dropped / submitted * 100` and
+`cancellation_percent` is `cancelled / submitted * 100`; zero submissions report 0.
+
 ## Runtime Format Recording
 
 At startup, the `DirectCapture` class records the runtime Mir source format:
@@ -210,6 +220,11 @@ Fields recorded:
 - `transport`: The selected transport format (rgb565 or xrgb8888)
 - `conversion_path`: The conversion path used for this source format
 
+## Qualification State
+
+Pixel-format support is implemented on the three pixel-format-benchmark branches;
+end-to-end hardware qualification is pending.
+
 ## Default Format Decision
 
 **Default format decision: PENDING HARDWARE BENCHMARK**
@@ -225,7 +240,7 @@ The benchmark has not run yet. Do not assume XRGB8888 is the default.
 3. The `gud_fb_create()` function validates the GEM object is large enough for
    the framebuffer dimensions and format.
 4. The `gud_xdisp_buffers_init()` function allocates buffers for the worst-case
-   format (XRGB8888, 4 bytes/pixel) to ensure all formats are supported.
+   format (XRGB8888, 4 bytes/pixel) for the implemented transport formats.
 5. The Pi gadget validates buffer request length against `bytes_per_pixel(format)`.
 6. The mirgud client validates the `--pixel-format` option and passes it through
    to the GUD KMS driver for framebuffer allocation.

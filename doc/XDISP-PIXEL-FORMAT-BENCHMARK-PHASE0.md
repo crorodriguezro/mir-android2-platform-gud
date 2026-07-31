@@ -57,19 +57,20 @@ DRM format comments specify the layout for a little-endian system:
 - Integer value: 0x00RRGGBB
 - LE memory: [B, G, R, X]
 
-### Byte-for-byte compatibility
+### Scanout-copy compatibility
 
 `mir_pixel_format_xrgb_8888` (integer 0x00RRGGBB, LE memory [B, G, R, X])
-is the **only** Mir format whose little-endian memory representation is
-byte-for-byte identical to `DRM_FORMAT_XRGB8888` (also [B, G, R, X]).
+is byte-for-byte identical to `DRM_FORMAT_XRGB8888`. On little-endian targets,
+`mir_pixel_format_argb_8888` is also scanout-copy compatible for visible RGB
+channels: its alpha byte occupies the ignored X byte in XRGB8888.
 
-All other 4-byte Mir formats require channel reordering:
+Other 4-byte Mir formats require channel reordering:
 - `mir_pixel_format_abgr_8888` → [R, G, B, A] → reorder to [B, G, R, X]
 - `mir_pixel_format_xbgr_8888` → [R, G, B, X] → reorder to [B, G, R, X]
-- `mir_pixel_format_argb_8888` → [B, G, R, A] → zero alpha byte
 
 The EGL fallback path (`EglCapture`) uses `GL_BGRA_EXT` or `GL_RGBA` and
-converts to `mir_pixel_format_argb_8888` or `mir_pixel_format_abgr_8888`.
+interprets them as `mir_pixel_format_argb_8888` and `mir_pixel_format_abgr_8888`
+respectively before generic conversion.
 
 ## 2. GUD DRM framebuffer format
 
@@ -83,8 +84,8 @@ frame.dumb.bpp = mirgud::bytes_per_pixel(pixel_format) * 8;
 drmModeAddFB2(fd, width, height, mirgud::drm_format(pixel_format), ...)
 ```
 
-`gud_fb_create()` in `gud_pipe.c` accepts both `DRM_FORMAT_RGB565` and
-`DRM_FORMAT_XRGB8888`.
+`gud_fb_create()` in `gud_pipe.c` implements acceptance of both `DRM_FORMAT_RGB565`
+and `DRM_FORMAT_XRGB8888`; hardware qualification remains pending.
 
 `gud_pipe_check()` validates framebuffer pitch against `bytes_per_pixel(format)`.
 
@@ -137,7 +138,8 @@ The `copy_buffer_to_framebuffer()` function copies pixels with the given bpp.
 
 `DrmScanoutBackend::add_framebuffer()` adds format-aware framebuffers.
 
-The Pi DRM scanout supports both RGB565 and XRGB8888.
+The Pi DRM scanout implementation accepts both RGB565 and XRGB8888; hardware
+qualification remains pending.
 
 The `TransferFormat` enum in `main.rs` has `Rgb565`, `Rgb888`, and `Xrgb8888`
 options (selected via `GUD_TRANSFER_FORMAT` env var).
@@ -147,7 +149,7 @@ options (selected via `GUD_TRANSFER_FORMAT` env var).
 | Component           | RGB565 | XRGB8888 |
 |---------------------|--------|----------|
 | Mir source          | No     | Yes (runtime evidence confirms 4 bytes/pixel; exact enum recorded) |
-| mirgud conversion   | Yes    | Yes (direct-copy when mir_pixel_format_xrgb_8888, otherwise channel-reorder) |
+| mirgud conversion   | Yes    | Yes (direct-copy for xrgb_8888 and argb_8888 on LE; otherwise conversion) |
 | GUD DRM framebuffer | Yes    | Yes (DRM_FORMAT_XRGB8888) |
 | GUD protocol        | Yes    | Yes (GUD_PIXEL_FORMAT_XRGB8888) |
 | Pi gadget protocol  | Yes    | Yes (GUD_PIXEL_FORMAT_XRGB8888 advertised) |
@@ -159,7 +161,7 @@ options (selected via `GUD_TRANSFER_FORMAT` env var).
 Component                RGB565     XRGB8888
 ------------------------------------------------
 Mir source               No         Yes (runtime evidence confirms 4 bytes/pixel; exact enum recorded)
-mirgud conversion        Yes        Yes (direct-copy when mir_pixel_format_xrgb_8888, otherwise channel-reorder)
+mirgud conversion        Yes        Yes (direct-copy for xrgb_8888 and argb_8888 on LE; otherwise conversion)
 GUD DRM framebuffer      Yes        Yes (DRM_FORMAT_XRGB8888)
 host GUD support         Yes        Yes (GUD_PIXEL_FORMAT_XRGB8888)
 Pi gadget support        Yes        Yes (GUD_PIXEL_FORMAT_XRGB8888 advertised)
@@ -171,17 +173,21 @@ Pi scanout support       Yes        Yes (DrmFourcc::Xrgb8888)
 Runtime evidence confirms a 4-byte-per-pixel source. The exact MirPixelFormat
 enum value is recorded at runtime and used to select the conversion path.
 
-When the Mir source is `mir_pixel_format_xrgb_8888`, the XRGB8888 transport
-uses a direct row memcpy because the source memory is byte-for-byte compatible
-with `DRM_FORMAT_XRGB8888` on this little-endian target.
+When the Mir source is `mir_pixel_format_xrgb_8888`, XRGB8888 transport uses a
+byte-for-byte direct row memcpy. `mir_pixel_format_argb_8888` is also copied
+directly on little-endian targets because alpha occupies XRGB8888's ignored X byte.
 
-The entire pipeline from Mir through the host GUD driver to the Pi DRM scanout
-supports both RGB565 and XRGB8888.
+Support is implemented on the three pixel-format-benchmark branches; end-to-end
+hardware qualification is pending.
+
+Final reports include `received`, `submitted`, `presented`, `dropped`,
+`cancelled`, and `gud_submit_failures`, with the invariant `submitted =
+presented + dropped + cancelled + gud_submit_failures`.
 
 ## Prerequisites Before Hardware Benchmark
 
-1. Verify the runtime MirPixelFormat enum value matches `mir_pixel_format_xrgb_8888`
-   (or another 4-byte format) by inspecting the `conversion_path` log output.
+1. Record the runtime MirPixelFormat enum and inspect the selected `conversion_path`
+   log output; `xrgb_8888` and `argb_8888` select visible-RGB direct copy on LE.
 2. Confirm the GUD host driver accepts `DRM_FORMAT_XRGB8888` in `gud_fb_create()`.
 3. Confirm the Pi gadget advertises `GUD_PIXEL_FORMAT_XRGB8888` in its format list.
 4. Run the deterministic quality comparison (`--quality --dump-frame`) to establish
