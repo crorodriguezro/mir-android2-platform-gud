@@ -133,6 +133,9 @@ def switch_format(args, case, dry_run):
     password = os.environ.get("XDISP_PI_SUDO_PASSWORD")
     if not password:
         raise RuntimeError("XDISP_PI_SUDO_PASSWORD is required for a format switch")
+    journal = subprocess.check_output(["ssh", args.pi_host, "journalctl -u gud-userspace.service -n 200 --no-pager"], text=True)
+    if "Poisoned" in journal or "entered InFlight" in journal.rsplit("returned to Idle", 1)[-1]:
+        raise RuntimeError("Pi receiver is not Idle; do not stop, restart, unbind, or reboot it")
     dropin = "70-xdisp-benchmark-rgb565.conf" if case["format"] == "rgb565" else "71-xdisp-benchmark-xrgb8888.conf"
     remote = (
         "test -f /home/cristian/{dropin} && "
@@ -143,6 +146,7 @@ def switch_format(args, case, dry_run):
         "printf '%s\\n' '{password}' | sudo -S systemctl start gud-userspace.service"
     ).format(dropin=dropin, password=password)
     subprocess.run(["ssh", args.pi_host, remote], check=True, timeout=30)
+    subprocess.run(["ssh", args.pi_host, "systemctl is-active --quiet gud-userspace.service"], check=True, timeout=15)
 
 
 def command_for(args, case):
