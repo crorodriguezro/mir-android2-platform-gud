@@ -182,9 +182,17 @@ def validate(case, artifact, dry_run):
     if not final:
         return False, "missing_final_report"
     fields = dict(item.split("=", 1) for item in final[-1].split() if "=" in item)
-    required_zero = ("frames_dropped", "gud_submit_failures", "frames_cancelled")
+    measured_us = int(fields.get("benchmark_elapsed_us", "0"))
+    required_us = case["measured_seconds"] * 1000000
+    if measured_us + 100000 < required_us:
+        return False, "measured_interval_incomplete"
+    required_zero = ("frames_dropped", "gud_submit_failures")
     if fields.get("accounting_ok") != "true" or any(fields.get(key) != "0" for key in required_zero):
         return False, "presenter_accounting_or_error"
+    # The final report can cancel one pending frame while stopping after the
+    # measured interval. It is recorded in evidence but is not a timed drop.
+    if int(fields.get("frames_cancelled", "0")) > 1:
+        return False, "unexpected_cancellation"
     kernel = (artifact / "phone-kernel.log").read_text(errors="replace")
     pi = (artifact / "pi-service.log").read_text(errors="replace")
     if "-110" in kernel or "short_read=true" in pi or "Poisoned" in pi or "Wrote framebuffer dump" in pi or "Wrote raw framebuffer dump" in pi:

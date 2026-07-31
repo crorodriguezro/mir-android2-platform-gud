@@ -52,6 +52,19 @@ class RunnerTest(unittest.TestCase):
             self.assertEqual([1, 1, 2, 2], [case["round"] for case in cases])
             self.assertEqual([1, 2, 3, 4], [case["order"] for case in cases])
 
+    def test_validator_allows_one_shutdown_cancellation(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("runner", RUNNER)
+        runner = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(runner)
+        path = ROOT / "doc/benchmarks/2026-07-30-rgb565-vs-xrgb8888/sessions" / ("validator-" + uuid.uuid4().hex)
+        path.mkdir(parents=True)
+        (path / "stderr.log").write_text("report_kind=final final=true benchmark_elapsed_us=60000000 accounting_ok=true frames_dropped=0 gud_submit_failures=0 frames_cancelled=1\n")
+        (path / "phone-kernel.log").write_text("")
+        (path / "pi-service.log").write_text("")
+        self.assertEqual((True, None), runner.validate({"measured_seconds": 60}, path, False))
+        shutil.rmtree(path)
+
 
 if __name__ == "__main__":
     unittest.main()
