@@ -1,11 +1,15 @@
 mir_add_wrapped_executable(mir_unit_tests_xdisp NOINSTALL
   test_lifecycle.cpp
   test_child_termination.cpp
+  test_pixel_format.cpp
   ${PROJECT_SOURCE_DIR}/src/xdisp/lifecycle.cpp
   ${PROJECT_SOURCE_DIR}/src/xdisp/child_termination.cpp
 )
 
-target_include_directories(mir_unit_tests_xdisp PRIVATE ${PROJECT_SOURCE_DIR}/src/xdisp)
+target_include_directories(mir_unit_tests_xdisp PRIVATE
+  ${PROJECT_SOURCE_DIR}/src/xdisp
+  ${PROJECT_SOURCE_DIR}/src/utils
+)
 target_link_libraries(mir_unit_tests_xdisp
   ${GTEST_BOTH_LIBRARIES}
   ${GMOCK_LIBRARIES}

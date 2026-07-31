@@ -88,9 +88,10 @@ struct Stats
     uint64_t dropped{};
     uint64_t conversion_failures{};
     uint64_t submit_failures{};
-    uint64_t capture_us{};
-    uint64_t conversion_us{};
-    uint64_t submit_us{};
+    mirgud::TimingSummary capture_us{};
+    mirgud::TimingSummary conversion_us{};
+    mirgud::TimingSummary submit_us{};
+    uint64_t conversion_path_counts[5]{}; /* indexed by ConversionPath */
 };
 
 void stop(int)
@@ -186,20 +187,30 @@ public:
     {
         std::lock_guard<std::mutex> lock{mutex};
         ++statistics.received;
-        statistics.capture_us += capture_us;
-        statistics.conversion_us += conversion_us;
+        statistics.capture_us.add(capture_us);
+        statistics.conversion_us.add(conversion_us);
+        ++statistics.conversion_path_counts[static_cast<unsigned>(conversion_path)];
     }
 
-    void submit_time(uint64_t us)
+    void presented(uint64_t us)
     {
         std::lock_guard<std::mutex> lock{mutex};
-        statistics.submit_us += us;
+        statistics.submit_us.add(us);
+        ++statistics.presented;
+        if (statistics.presented == 1 && first_presented)
+            first_presented();
     }
 
     Stats stats() const
     {
         std::lock_guard<std::mutex> lock{mutex};
         return statistics;
+    }
+
+    void set_conversion_path(mirgud::ConversionPath path)
+    {
+        std::lock_guard<std::mutex> lock{mutex};
+        conversion_path = path;
     }
 
     void rethrow_failure()
@@ -245,12 +256,8 @@ private:
                 auto const submit_start = std::chrono::steady_clock::now();
                 present(*frame);
                 auto const submit_end = std::chrono::steady_clock::now();
-                submit_time(static_cast<uint64_t>(
+                presented(static_cast<uint64_t>(
                     std::chrono::duration_cast<std::chrono::microseconds>(submit_end - submit_start).count()));
-                std::lock_guard<std::mutex> lock{mutex};
-                ++statistics.presented;
-                if (statistics.presented == 1 && first_presented)
-                    first_presented();
             }
             catch (std::exception const& error)
             {
@@ -273,6 +280,7 @@ private:
     std::condition_variable wakeup;
     std::unique_ptr<mirgud::Frame> pending;
     Stats statistics;
+    mirgud::ConversionPath conversion_path{mirgud::ConversionPath::channel_reorder};
     std::exception_ptr presentation_failure;
     bool stopping{};
     std::thread worker;
@@ -736,11 +744,21 @@ public:
         auto const region = graphics_region(stream);
         if (region.width <= 0 || region.height <= 0 || region.stride <= 0)
             throw std::runtime_error{"invalid CPU screencast graphics region"};
-        std::cerr << "mirgud: virtual frame source is CPU mapped " << region.width << "x" << region.height <<
-            " format=" << static_cast<int>(region.pixel_format) << " stride=" << region.stride <<
+        source_format = mirgud::make_source_format(
+            region.pixel_format,
+            static_cast<uint32_t>(region.width),
+            static_cast<uint32_t>(region.height),
+            region.stride, row_order, pixel_format);
+        std::cerr << "mirgud: virtual frame source is CPU mapped " <<
+            source_format.width << "x" << source_format.height <<
+            " mir_format=" << static_cast<int>(source_format.pixel_format) <<
+            " stride=" << source_format.stride <<
             " row_order=" << (row_order == mirgud::RowOrder::top_down ? "top-down" : "bottom-up") <<
-            " transport=" << mirgud::format_name(pixel_format) << std::endl;
+            " transport=" << mirgud::format_name(pixel_format) <<
+            " conversion_path=" << source_format.conversion_path_name() << std::endl;
     }
+
+    mirgud::SourceFormat const& source_format_info() const { return source_format; }
 
     mirgud::Frame next(uint64_t* capture_us, uint64_t* conversion_us)
     {
@@ -777,6 +795,7 @@ private:
     MirBufferStream* stream;
     mirgud::PixelFormat pixel_format;
     mirgud::RowOrder row_order;
+    mirgud::SourceFormat source_format;
 };
 
 class EglCapture
@@ -836,7 +855,6 @@ public:
             mirgud::Frame frame{width, height, pixel_format,
                 std::vector<uint8_t>(static_cast<std::size_t>(width) * height *
                     mirgud::bytes_per_pixel(pixel_format))};
-            auto const format = read_format == GL_BGRA_EXT ? mir_pixel_format_argb_8888 : mir_pixel_format_abgr_8888;
             mirgud::copy_rows_from_rgba(pixel_format, bytes.data(), width, height,
                 mirgud::RowOrder::bottom_up, frame.pixels.data());
             auto const conversion_end = std::chrono::steady_clock::now();
@@ -865,19 +883,52 @@ private:
     EGLSurface surface{EGL_NO_SURFACE};
     EGLConfig config{};
     GLenum read_format{};
+
+public:
+    GLenum source_read_format() const { return read_format; }
 };
 
 void report(Stats const& stats, pid_t monitor_pid)
 {
-    std::cerr << "mirgud: frames_received=" << stats.received << " frames_presented=" << stats.presented <<
-        " frames_dropped=" << stats.dropped << " conversion_failures=" << stats.conversion_failures <<
-        " gud_submit_failures=" << stats.submit_failures;
-    if (stats.received > 0)
+    std::cerr << "mirgud: frames_received=" << stats.received <<
+        " frames_submitted=" << stats.submitted <<
+        " frames_presented=" << stats.presented <<
+        " frames_dropped=" << stats.dropped;
+    if (stats.submitted > 0)
     {
-        std::cerr << " capture_us_avg=" << stats.capture_us / stats.received <<
-            " conversion_us_avg=" << stats.conversion_us / stats.received <<
-            " submit_us_avg=" << stats.submit_us / stats.received;
+        auto const drop_pct = (static_cast<double>(stats.dropped) * 100.0) /
+            static_cast<double>(stats.submitted);
+        std::cerr << " drop_percent=" << drop_pct;
     }
+    else
+    {
+        std::cerr << " drop_percent=0";
+    }
+    std::cerr << " conversion_failures=" << stats.conversion_failures <<
+        " gud_submit_failures=" << stats.submit_failures;
+
+    auto const report_timing = [](char const* label, mirgud::TimingSummary const& ts)
+    {
+        std::cerr << " " << label << "_us[min=" << ts.min <<
+            " avg=" << ts.average() << " max=" << ts.max <<
+            " p50=" << ts.percentile(50.0) << " p95=" << ts.percentile(95.0) << "]";
+    };
+    report_timing("capture", stats.capture_us);
+    report_timing("conversion", stats.conversion_us);
+    report_timing("submit", stats.submit_us);
+
+    std::cerr << " submit_us_avg=" << mirgud::average(stats.submit_us.total, stats.presented) <<
+        " capture_us_avg=" << mirgud::average(stats.capture_us.total, stats.received) <<
+        " conversion_us_avg=" << mirgud::average(stats.conversion_us.total, stats.received);
+
+    for (unsigned i = 0; i < 5; ++i)
+    {
+        if (stats.conversion_path_counts[i] > 0)
+            std::cerr << " conversion_path=" <<
+                mirgud::conversion_path_name(static_cast<mirgud::ConversionPath>(i)) <<
+                ":" << stats.conversion_path_counts[i];
+    }
+
     std::cerr << " self_fds=" << fd_count(getpid());
     if (monitor_pid > 0)
         std::cerr << " monitor_pid=" << monitor_pid << " monitor_fds=" << fd_count(monitor_pid) <<
@@ -897,6 +948,7 @@ try
     std::string source_mode{"primary"};
     std::string pixel_format_str{"rgb565"};
     bool pattern{};
+    bool quality{};
     bool no_gud{};
     bool extend_hold{};
     bool managed{};
@@ -918,8 +970,10 @@ try
         ("size,s", po::value<std::vector<uint32_t>>()->multitoken(), "GUD/screencast size (default 1280 720)")
         ("cap-interval", po::value<uint32_t>(&capture_interval), "capture every N display intervals")
         ("monitor-pid", po::value<pid_t>(&monitor_pid), "sample this compositor PID's fd/sync_file counts")
-        ("pattern", po::bool_switch(&pattern), "Stage A: send the static checkerboard, without Mir")
-        ("no-gud", po::bool_switch(&no_gud), "source-only stop-condition probe: copy/release frames without opening GUD")
+        ("pattern", po::bool_switch(&pattern), "generated transport workload (static checkerboard, no Mir)")
+        ("quality", po::bool_switch(&quality),
+            "generate deterministic quality reference patterns and dump both RGB565 and XRGB8888 PPMs; requires --dump-frame")
+        ("no-gud", po::bool_switch(&no_gud), "Mir source/copy/conversion benchmark: copy/release frames without opening GUD")
         ("extend-hold", po::bool_switch(&extend_hold),
             "hold an Aethercast-compatible extend screencast without reading frames")
         ("managed", po::bool_switch(&managed), "run as an xdispd-managed child")
@@ -968,19 +1022,17 @@ try
         throw std::runtime_error{"--dump-frame-after must be positive"};
     if (variables.count("dump-frame-interval") && dump_frame.empty())
         throw std::runtime_error{"--dump-frame-interval requires --dump-frame"};
+    if (quality && dump_frame.empty())
+        throw std::runtime_error{"--quality requires --dump-frame"};
+    if (quality && (pattern || extend_hold || managed))
+        throw std::runtime_error{"--quality is exclusive with --pattern, --extend-hold, and --managed"};
     if (managed && (gud_fd < 0 || !gud_connector || status_fd < 0 || pattern || no_gud || extend_hold ||
         !dump_frame.empty() || source_mode != "extend" || socket != "/run/mir_socket"))
         throw std::runtime_error{"managed mode requires inherited GUD/status fds and the fixed extend source"};
     if (!managed && (variables.count("gud-fd") || variables.count("gud-connector") || variables.count("status-fd")))
         throw std::runtime_error{"managed fd options require --managed"};
 
-    mirgud::PixelFormat pixel_format{};
-    if (pixel_format_str == "rgb565")
-        pixel_format = mirgud::PixelFormat::rgb565;
-    else if (pixel_format_str == "xrgb8888")
-        pixel_format = mirgud::PixelFormat::xrgb8888;
-    else
-        throw std::runtime_error{"pixel-format must be rgb565 or xrgb8888"};
+    mirgud::PixelFormat pixel_format = mirgud::parse_pixel_format(pixel_format_str);
 
     managed_mode = managed;
     managed_status_fd = status_fd;
@@ -994,6 +1046,30 @@ try
     action.sa_flags = 0;
     sigaction(SIGINT, &action, nullptr);
     sigaction(SIGTERM, &action, nullptr);
+
+    if (quality)
+    {
+        std::cerr << "mirgud: deterministic quality reference generation" << std::endl;
+        auto const write_quality = [&](std::string const& tag, std::vector<uint8_t> const& rgb888)
+        {
+            auto const rgb565_pixels = mirgud::rgb888_to_rgb565(rgb888.data(), width, height);
+            auto const xrgb_pixels = mirgud::rgb888_to_xrgb8888(rgb888.data(), width, height);
+            mirgud::Frame const rgb565_frame{width, height, mirgud::PixelFormat::rgb565, rgb565_pixels};
+            mirgud::Frame const xrgb_frame{width, height, mirgud::PixelFormat::xrgb8888, xrgb_pixels};
+            auto const rgb565_rgb = mirgud::frame_to_rgb888(rgb565_frame);
+            auto const xrgb_rgb = mirgud::frame_to_rgb888(xrgb_frame);
+            mirgud::write_ppm_rgb888(rgb565_rgb.data(), width, height,
+                dump_frame + "." + tag + ".rgb565.ppm");
+            mirgud::write_ppm_rgb888(xrgb_rgb.data(), width, height,
+                dump_frame + "." + tag + ".xrgb8888.ppm");
+        };
+        write_quality("gradient", mirgud::gradient_pattern(width, height));
+        write_quality("ramps", mirgud::color_ramps_pattern(width, height));
+        write_quality("hfreq", mirgud::high_frequency_pattern(width, height));
+        write_quality("photo", mirgud::photo_like_pattern(width, height));
+        std::cerr << "mirgud: quality reference generation complete" << std::endl;
+        return EXIT_SUCCESS;
+    }
     std::unique_ptr<GudKms> kms;
     if (no_gud)
         std::cerr << "mirgud: GUD disabled for source-only stability probe" << std::endl;
@@ -1151,6 +1227,7 @@ try
     {
         direct = std::make_unique<DirectCapture>(stream, pixel_format,
             source_mode == "extend" ? mirgud::RowOrder::top_down : mirgud::RowOrder::bottom_up);
+        presenter.set_conversion_path(direct->source_format_info().conversion_path);
     }
     catch (std::exception const& direct_error)
     {
@@ -1205,6 +1282,8 @@ try
     else
     {
         EglCapture capture{connection.get(), stream, width, height, pixel_format};
+        presenter.set_conversion_path(mirgud::conversion_path_for(pixel_format,
+            capture.source_read_format() == GL_BGRA_EXT ? mir_pixel_format_argb_8888 : mir_pixel_format_abgr_8888));
         bool first{};
         uint64_t prior_fingerprint{};
         bool have_prior_fingerprint{};
