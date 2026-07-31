@@ -282,7 +282,8 @@ def run_case(args, session, case, dry_run):
         transition(session, state, "invalid", invalid_reason=reason)
         return False
     except Exception as error:
-        target = "invalid" if "presenter_did_not_idle_after_warmup" in str(error) else "failed"
+        target = "blocked" if "Pi receiver is not Idle" in str(error) else (
+            "invalid" if "presenter_did_not_idle_after_warmup" in str(error) else "failed")
         transition(session, state, target, invalid_reason=str(error))
         return False
     finally:
@@ -301,6 +302,14 @@ def write_summary(session, manifest):
     (session / "source-results.csv").write_text("case_id,phase,format,state,attempt,artifact\n")
     (session / "excluded-runs.csv").write_text("case_id,reason\n")
     (session / "session-summary.md").write_text("# XDISP Session Summary\n\n" + "\n".join(f"- `{row['case_id']}`: {row['state']} attempt {row['attempt']}" for row in rows) + "\n")
+    stage_b_rows = [row for row in rows if row["phase"] == "stage-b-motion"]
+    if stage_b_rows:
+        (session / "stage-b-summary.md").write_text("# Stage B Motion Summary\n\n" + "\n".join(
+            f"- `{row['case_id']}`: {row['state']} attempt {row['attempt']}" for row in stage_b_rows) + "\n")
+        with (session / "stage-b-results.csv").open("w", newline="") as stream:
+            writer = csv.DictWriter(stream, fieldnames=stage_b_rows[0].keys())
+            writer.writeheader(); writer.writerows(stage_b_rows)
+        (session / "stage-b-excluded.csv").write_text("case_id,reason\n")
 
 
 def main():
