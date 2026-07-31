@@ -174,6 +174,18 @@ def phone_sudo(args, command):
     return f"printf '%s\\n' '{password}' | sudo -S {command}"
 
 
+def transport_failure_classification(kernel, pi):
+    if "classification=invalid_kernel_read_completion" in pi:
+        return "invalid_kernel_read_completion"
+    if "short_read=true" in pi or "short FunctionFS bulk OUT read" in pi:
+        return "short_read"
+    if "-110" in kernel:
+        return "timeout"
+    if "Poisoned" in pi:
+        return "poison"
+    return None
+
+
 def validate(case, artifact, dry_run):
     if dry_run:
         return True, None
@@ -195,7 +207,10 @@ def validate(case, artifact, dry_run):
         return False, "unexpected_cancellation"
     kernel = (artifact / "phone-kernel.log").read_text(errors="replace")
     pi = (artifact / "pi-service.log").read_text(errors="replace")
-    if "-110" in kernel or "short_read=true" in pi or "Poisoned" in pi or "Wrote framebuffer dump" in pi or "Wrote raw framebuffer dump" in pi:
+    transport_failure = transport_failure_classification(kernel, pi)
+    if transport_failure:
+        return False, transport_failure
+    if "Wrote framebuffer dump" in pi or "Wrote raw framebuffer dump" in pi:
         return False, "transport_or_dump_error"
     return True, None
 

@@ -65,6 +65,20 @@ class RunnerTest(unittest.TestCase):
         self.assertEqual((True, None), runner.validate({"measured_seconds": 60}, path, False))
         shutil.rmtree(path)
 
+    def test_transport_failures_have_distinct_classifications(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("runner", RUNNER)
+        runner = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(runner)
+
+        self.assertEqual("short_read", runner.transport_failure_classification("", "short_read=true"))
+        self.assertEqual(
+            "invalid_kernel_read_completion",
+            runner.transport_failure_classification("", "classification=invalid_kernel_read_completion"),
+        )
+        self.assertEqual("timeout", runner.transport_failure_classification("GUD failed: -110", ""))
+        self.assertEqual("poison", runner.transport_failure_classification("", "entered Poisoned"))
+
 
 if __name__ == "__main__":
     unittest.main()
