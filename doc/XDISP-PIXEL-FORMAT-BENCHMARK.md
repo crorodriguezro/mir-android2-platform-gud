@@ -94,10 +94,17 @@ mirgud --pattern --pixel-format rgb565
 mirgud --pattern --pixel-format xrgb8888
 ```
 
-The `--pattern` flag sends a static checkerboard frame repeatedly. It is a
-generated transport workload and does not benchmark Mir capture. With
-`--no-gud`, it exercises no GUD transport; without `--no-gud`, it measures
-the generated-frame transport path including USB transfer.
+`--pattern-generation pregenerated` is the primary transport-isolated mode. It
+builds static workload bytes before `benchmark_start` and copies a bounded
+stored frame into each owned submission. `motion` and `noise` use a bounded,
+deterministic `--pattern-sequence-frames N` sequence (default 60). This does
+not benchmark Mir capture. With `--no-gud`, it exercises no GUD transport;
+without `--no-gud`, it measures the transport path including USB transfer.
+
+`--pattern-generation per-frame` retains the generated pipeline benchmark.
+Each timed iteration generates logical RGB888 and converts it to the selected
+transport format, reporting `pattern_source_generation_us`,
+`pattern_format_conversion_us`, and `pattern_frame_total_us` separately.
 
 `--pattern-fps N` defaults to 1 Hz and `--pattern-duration SECONDS` defaults to
 0 (until stopped). The 1 Hz default is a static commit test, not a throughput
@@ -129,8 +136,10 @@ Failure counters are classified at their owning boundary: capture, conversion,
 release, dump, GUD submit, and lifecycle callback failures.
 
 For direct Mir ARGB8888-to-XRGB8888 copies, the source alpha byte is transported
-as the ignored X byte. This can affect LZ4 entropy. Bounded sampling reports
-its range, constancy, and 0x00/0xff percentages; it does not modify the byte.
+as the ignored X byte. This can affect LZ4 entropy. Bounded samples are
+distributed from the first to the final framebuffer pixel, across the full
+frame rather than one row; they report range, constancy, and 0x00/0xff
+percentages without modifying the byte.
 
 ### Phase 6: Full Lomiri Extend Benchmarks
 
@@ -185,17 +194,19 @@ The mirgud client reports periodic (`final=false`) and authoritative shutdown
 mirgud: report_kind=final final=true frames_received=N frames_submitted=N
         frames_presented=N frames_dropped=N frames_cancelled=N drop_percent=X.X
         cancellation_percent=X.X conversion_failures=N gud_submit_failures=N accounting_ok=true
-        capture_us[min=N avg=N max=N p50=N p95=N]
-        conversion_us[min=N avg=N max=N p50=N p95=N]
-        submit_us[min=N avg=N max=N p50=N p95=N]
-        submit_us_avg=N capture_us_avg=N conversion_us_avg=N
-        conversion_path=direct-copy:N conversion_path=channel-reorder:N
+        transport_format=xrgb8888 transport_bpp=4 source_mir_format=N
+        conversion_path_current=direct-copy conversion_path_direct_copy_frames=N
+        conversion_path_channel_reorder_frames=N pattern_generation=pregenerated
+        pattern_sequence_frames=1 pattern_workload=checkerboard pattern_seed=1
+        acquire_us_samples=N acquire_us_min=N acquire_us_avg=N acquire_us_max=N
+        submit_us_samples=N submit_us_min=N submit_us_avg=N submit_us_max=N
         self_fds=N
 ```
 
-Denominator rules:
-- `capture_us_avg` and `conversion_us_avg` are divided by `frames_received`
-- `submit_us_avg` is divided by `frames_presented + gud_submit_failures`
+Every timing key appears once. Its average is `TimingSummary.total /
+TimingSummary.count`, including `submit_us_avg`; zero samples produce zero.
+The `*_us_samples` fields expose the corresponding count. Periodic and final
+reports use the same names and meanings.
 
 Timing fields:
 - `capture_us`: Time to read a frame from Mir (CPU mapping or EGL readback)
@@ -252,6 +263,10 @@ Fields recorded:
 - `row_order`: top-down or bottom-up
 - `transport`: The selected transport format (rgb565 or xrgb8888)
 - `conversion_path`: The conversion path used for this source format
+
+Every subsequent CPU-mapped frame revalidates pixel format, width, height, and
+stride against this source contract. A change aborts the benchmark rather than
+silently changing the conversion path or destination allocation.
 
 ## Qualification State
 

@@ -37,6 +37,9 @@ struct Stats
     TimingSummary release_us{};
     TimingSummary capture_cycle_us{};
     TimingSummary submit_us{};
+    TimingSummary pattern_source_generation_us{};
+    TimingSummary pattern_format_conversion_us{};
+    TimingSummary pattern_frame_total_us{};
     uint64_t conversion_path_counts[5]{};
 };
 
@@ -171,6 +174,21 @@ public:
         statistics.release_us.add(release_us);
         statistics.capture_cycle_us.add(capture_cycle_us);
         ++statistics.conversion_path_counts[static_cast<unsigned>(conversion_path)];
+    }
+
+    void add_pattern_timings(uint64_t source_generation_us, uint64_t format_conversion_us,
+                             uint64_t frame_total_us)
+    {
+        std::lock_guard<std::mutex> lock{mutex};
+        statistics.pattern_source_generation_us.add(source_generation_us);
+        statistics.pattern_format_conversion_us.add(format_conversion_us);
+        statistics.pattern_frame_total_us.add(frame_total_us);
+    }
+
+    void record_conversion_path(ConversionPath path)
+    {
+        std::lock_guard<std::mutex> lock{mutex};
+        ++statistics.conversion_path_counts[static_cast<unsigned>(path)];
     }
 
     void increment(uint64_t Stats::*member)

@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -276,6 +277,20 @@ struct SourceFormat
         return mirgud::conversion_path_name(conversion_path);
     }
 };
+
+inline void validate_source_format(SourceFormat const& expected, SourceFormat const& actual)
+{
+    if (expected.pixel_format == actual.pixel_format && expected.width == actual.width &&
+        expected.height == actual.height && expected.stride == actual.stride)
+        return;
+
+    std::ostringstream message;
+    message << "Mir source format changed: pixel_format old=" << static_cast<int>(expected.pixel_format) <<
+        " new=" << static_cast<int>(actual.pixel_format) << " width old=" << expected.width <<
+        " new=" << actual.width << " height old=" << expected.height << " new=" << actual.height <<
+        " stride old=" << expected.stride << " new=" << actual.stride;
+    throw std::runtime_error{message.str()};
+}
 
 inline SourceFormat make_source_format(
     MirPixelFormat pixel_format, uint32_t width, uint32_t height,
@@ -719,6 +734,13 @@ inline Frame pattern_frame(PatternWorkload workload, PixelFormat format, uint32_
         rgb888_to_rgb565(rgb.data(), width, height) : rgb888_to_xrgb8888(rgb.data(), width, height)};
 }
 
+inline Frame pattern_frame_from_rgb888(std::vector<uint8_t> const& rgb, PixelFormat format,
+                                       uint32_t width, uint32_t height)
+{
+    return {width, height, format, format == PixelFormat::rgb565 ?
+        rgb888_to_rgb565(rgb.data(), width, height) : rgb888_to_xrgb8888(rgb.data(), width, height)};
+}
+
 struct XByteSamples
 {
     uint64_t count{};
@@ -749,7 +771,7 @@ inline void sample_x_bytes(uint8_t const* source, std::ptrdiff_t stride, uint32_
     auto const total = std::min<uint64_t>(limit, static_cast<uint64_t>(width) * height);
     for (uint64_t i = 0; i != total; ++i)
     {
-        auto const pixel = i * static_cast<uint64_t>(width) / total;
+        auto const pixel = total == 1 ? 0 : i * (static_cast<uint64_t>(width) * height - 1) / (total - 1);
         auto const y = static_cast<uint32_t>(pixel / width);
         auto const x = static_cast<uint32_t>(pixel % width);
         auto const source_y = order == RowOrder::top_down ? y : height - 1 - y;

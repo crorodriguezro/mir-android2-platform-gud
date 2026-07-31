@@ -303,6 +303,38 @@ TEST(MirgudPattern, deterministic_seed_and_format_conversion_share_rgb_source)
     EXPECT_THROW(mirgud::parse_pattern_workload("invalid"), std::runtime_error);
 }
 
+TEST(MirgudPattern, pregenerated_frames_repeat_without_changing_logical_rgb_source)
+{
+    auto const rgb = mirgud::pattern_rgb888(mirgud::PatternWorkload::gradient, 8, 4, 0, 7);
+    auto const stored = mirgud::pattern_frame_from_rgb888(rgb, mirgud::PixelFormat::xrgb8888, 8, 4);
+    auto const submitted = mirgud::Frame{stored.width, stored.height, stored.format, stored.pixels};
+    EXPECT_EQ(stored.pixels, submitted.pixels);
+    EXPECT_EQ(rgb, mirgud::frame_to_rgb888(submitted));
+}
+
+TEST(MirgudSourceFormat, rejects_each_runtime_contract_change)
+{
+    auto const expected = mirgud::make_source_format(mir_pixel_format_argb_8888, 1280, 720, 5120,
+        mirgud::RowOrder::top_down, mirgud::PixelFormat::xrgb8888);
+    auto expect_change = [&](mirgud::SourceFormat actual, char const* field)
+    {
+        try { mirgud::validate_source_format(expected, actual); FAIL() << "expected source change"; }
+        catch (std::runtime_error const& error) { EXPECT_NE(std::string{error.what()}.find(field), std::string::npos); }
+    };
+    auto actual = expected;
+    actual.pixel_format = mir_pixel_format_abgr_8888;
+    expect_change(actual, "pixel_format");
+    actual = expected;
+    ++actual.width;
+    expect_change(actual, "width");
+    actual = expected;
+    ++actual.height;
+    expect_change(actual, "height");
+    actual = expected;
+    ++actual.stride;
+    expect_change(actual, "stride");
+}
+
 TEST(MirgudXByteSamples, tracks_constant_and_varying_bounded_samples)
 {
     std::vector<uint8_t> zero(4 * 8, 0);
@@ -321,6 +353,23 @@ TEST(MirgudXByteSamples, tracks_constant_and_varying_bounded_samples)
     EXPECT_FALSE(varied.constant);
     EXPECT_EQ(0xffu, varied.max);
     EXPECT_EQ(1u, varied.ff);
+}
+
+TEST(MirgudXByteSamples, distributes_samples_over_full_frame)
+{
+    constexpr uint32_t width = 1280;
+    constexpr uint32_t height = 720;
+    std::vector<uint8_t> source(static_cast<std::size_t>(width) * height * 4);
+    for (uint32_t y = 0; y != height; ++y)
+        for (uint32_t x = 0; x != width; ++x)
+            source[(static_cast<std::size_t>(y) * width + x) * 4 + 3] =
+                y == 0 ? 1 : (y == height - 1 ? 3 : 2);
+    mirgud::XByteSamples samples;
+    mirgud::sample_x_bytes(source.data(), width * 4, width, height, mirgud::RowOrder::top_down, &samples, 64);
+    EXPECT_EQ(64u, samples.count);
+    EXPECT_EQ(1u, samples.min);
+    EXPECT_EQ(3u, samples.max);
+    EXPECT_FALSE(samples.constant);
 }
 
 TEST(MirgudPresenter, accounts_for_one_presented_frame)

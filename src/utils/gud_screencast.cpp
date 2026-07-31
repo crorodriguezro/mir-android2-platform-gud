@@ -668,6 +668,9 @@ public:
         auto const region = graphics_region(stream);
         if (region.width <= 0 || region.height <= 0 || region.stride <= 0)
             throw std::runtime_error{"invalid CPU screencast graphics region"};
+        mirgud::validate_source_format(source_format, mirgud::make_source_format(region.pixel_format,
+            static_cast<uint32_t>(region.width), static_cast<uint32_t>(region.height), region.stride,
+            row_order, pixel_format));
         auto const conversion_start = std::chrono::steady_clock::now();
         timings->acquire_us = elapsed_us(acquire_start, conversion_start);
         if (x_bytes && pixel_format == mirgud::PixelFormat::xrgb8888 &&
@@ -863,9 +866,20 @@ struct ReportSnapshot
     uint64_t submit_failures{};
 };
 
+struct ReportIdentity
+{
+    mirgud::PixelFormat transport_format;
+    MirPixelFormat source_mir_format{mir_pixel_format_invalid};
+    mirgud::ConversionPath conversion_path{mirgud::ConversionPath::channel_reorder};
+    char const* pattern_generation{"none"};
+    uint32_t pattern_sequence_frames{};
+    std::string pattern_workload{"none"};
+    uint32_t pattern_seed{};
+};
+
 void report(mirgud::Stats const& stats, pid_t monitor_pid, bool final,
             std::chrono::steady_clock::time_point benchmark_start,
-            ReportSnapshot* previous)
+            ReportSnapshot* previous, ReportIdentity const& identity)
 {
     auto const now = std::chrono::steady_clock::now();
     auto const benchmark_elapsed_us = elapsed_us(benchmark_start, now);
@@ -909,9 +923,24 @@ void report(mirgud::Stats const& stats, pid_t monitor_pid, bool final,
         " interval_submitted_fps=" << mirgud::fps(interval_submitted, interval_elapsed_us) <<
         " interval_presented_fps=" << mirgud::fps(interval_presented, interval_elapsed_us);
 
+    std::cerr << " transport_format=" << mirgud::format_name(identity.transport_format) <<
+        " transport_bpp=" << mirgud::bytes_per_pixel(identity.transport_format) <<
+        " source_mir_format=" << static_cast<int>(identity.source_mir_format) <<
+        " conversion_path_current=" << mirgud::conversion_path_name(identity.conversion_path) <<
+        " conversion_path_direct_copy_frames=" << stats.conversion_path_counts[0] <<
+        " conversion_path_channel_reorder_frames=" << stats.conversion_path_counts[1] <<
+        " conversion_path_rgb565_pack_frames=" << stats.conversion_path_counts[2] <<
+        " conversion_path_rgb565_expand_frames=" << stats.conversion_path_counts[3] <<
+        " conversion_path_rgb888_expand_frames=" << stats.conversion_path_counts[4] <<
+        " pattern_generation=" << identity.pattern_generation <<
+        " pattern_sequence_frames=" << identity.pattern_sequence_frames <<
+        " pattern_workload=" << identity.pattern_workload <<
+        " pattern_seed=" << identity.pattern_seed;
+
     auto const report_timing = [](char const* label, mirgud::TimingSummary const& ts)
     {
-        std::cerr << " " << label << "_us_min=" << ts.min <<
+        std::cerr << " " << label << "_us_samples=" << ts.count <<
+            " " << label << "_us_min=" << ts.min <<
             " " << label << "_us_avg=" << ts.average() <<
             " " << label << "_us_max=" << ts.max <<
             " " << label << "_us_p50=" << ts.percentile(50.0) <<
@@ -922,20 +951,11 @@ void report(mirgud::Stats const& stats, pid_t monitor_pid, bool final,
     report_timing("release", stats.release_us);
     report_timing("capture_cycle", stats.capture_cycle_us);
     report_timing("submit", stats.submit_us);
-
-    std::cerr << " submit_us_avg=" << mirgud::average(stats.submit_us.total,
-            stats.presented + stats.submit_failures) <<
-        " acquire_us_avg=" << mirgud::average(stats.acquire_us.total, stats.received) <<
-        " conversion_us_avg=" << mirgud::average(stats.conversion_us.total, stats.received) <<
-        " release_us_avg=" << mirgud::average(stats.release_us.total, stats.received) <<
-        " capture_cycle_us_avg=" << mirgud::average(stats.capture_cycle_us.total, stats.received);
-
-    for (unsigned i = 0; i < 5; ++i)
+    if (std::string{identity.pattern_generation} == "per-frame")
     {
-        if (stats.conversion_path_counts[i] > 0)
-            std::cerr << " conversion_path=" <<
-                mirgud::conversion_path_name(static_cast<mirgud::ConversionPath>(i)) <<
-                ":" << stats.conversion_path_counts[i];
+        report_timing("pattern_source_generation", stats.pattern_source_generation_us);
+        report_timing("pattern_format_conversion", stats.pattern_format_conversion_us);
+        report_timing("pattern_frame_total", stats.pattern_frame_total_us);
     }
 
     std::cerr << " self_fds=" << fd_count(getpid());
@@ -961,6 +981,8 @@ try
     uint32_t pattern_duration{};
     std::string pattern_workload{"checkerboard"};
     uint32_t pattern_seed{1};
+    std::string pattern_generation{"pregenerated"};
+    uint32_t pattern_sequence_frames{60};
     bool quality{};
     bool no_gud{};
     bool extend_hold{};
@@ -989,6 +1011,10 @@ try
         ("pattern-workload", po::value<std::string>(&pattern_workload),
             "generated workload: solid, checkerboard, gradient, motion, or noise")
         ("pattern-seed", po::value<uint32_t>(&pattern_seed), "deterministic generated workload seed")
+        ("pattern-generation", po::value<std::string>(&pattern_generation),
+            "pattern generation: pregenerated (default) or per-frame")
+        ("pattern-sequence-frames", po::value<uint32_t>(&pattern_sequence_frames),
+            "bounded pregenerated motion/noise sequence length (default 60)")
         ("quality", po::bool_switch(&quality),
             "generate deterministic quality reference patterns and dump both RGB565 and XRGB8888 PPMs; requires --dump-frame")
         ("no-gud", po::bool_switch(&no_gud), "Mir source/copy/conversion benchmark: copy/release frames without opening GUD")
@@ -1020,6 +1046,10 @@ try
         throw std::runtime_error{"pattern-fps must be positive"};
     if (pattern_fps > 1000000)
         throw std::runtime_error{"pattern-fps must not exceed 1000000"};
+    if (pattern_generation != "pregenerated" && pattern_generation != "per-frame")
+        throw std::runtime_error{"pattern-generation must be pregenerated or per-frame"};
+    if (pattern_sequence_frames == 0 || pattern_sequence_frames > 10000)
+        throw std::runtime_error{"pattern-sequence-frames must be between 1 and 10000"};
     if (variables.count("size"))
     {
         auto const size = variables["size"].as<std::vector<uint32_t>>();
@@ -1111,13 +1141,26 @@ try
     }, [] { managed_status("ACTIVE"); }, [] { running = false; }};
     auto benchmark_start = std::chrono::steady_clock::now();
     ReportSnapshot previous_report{};
+    ReportIdentity report_identity{pixel_format};
+    if (pattern)
+    {
+        report_identity.conversion_path = pixel_format == mirgud::PixelFormat::rgb565 ?
+            mirgud::ConversionPath::rgb565_pack : mirgud::ConversionPath::channel_reorder;
+        report_identity.pattern_generation = pattern_generation.c_str();
+        report_identity.pattern_sequence_frames = pattern_generation == "pregenerated" ?
+            ((workload == mirgud::PatternWorkload::motion || workload == mirgud::PatternWorkload::noise) ?
+                pattern_sequence_frames : 1) : 0;
+        report_identity.pattern_workload = pattern_workload;
+        report_identity.pattern_seed = pattern_seed;
+        presenter.set_conversion_path(report_identity.conversion_path);
+    }
     bool final_reported{};
     auto stop_report_rethrow = [&]
     {
         if (!final_reported)
         {
             presenter.stop();
-            report(presenter.stats(), monitor_pid, true, benchmark_start, &previous_report);
+            report(presenter.stats(), monitor_pid, true, benchmark_start, &previous_report, report_identity);
             final_reported = true;
         }
         presenter.rethrow_failure();
@@ -1129,7 +1172,7 @@ try
             try
             {
                 presenter.stop();
-                report(presenter.stats(), monitor_pid, true, benchmark_start, &previous_report);
+                report(presenter.stats(), monitor_pid, true, benchmark_start, &previous_report, report_identity);
                 final_reported = true;
                 try
                 {
@@ -1150,7 +1193,20 @@ try
     if (pattern)
     {
         std::cerr << "mirgud: generated workload=" << pattern_workload <<
+            " generation=" << pattern_generation << " sequence_frames=" << report_identity.pattern_sequence_frames <<
             " fps=" << pattern_fps << " duration_s=" << pattern_duration << std::endl;
+        std::vector<mirgud::Frame> pregenerated_frames;
+        if (pattern_generation == "pregenerated")
+        {
+            pregenerated_frames.reserve(report_identity.pattern_sequence_frames);
+            for (uint32_t i = 0; i != report_identity.pattern_sequence_frames; ++i)
+            {
+                auto const logical_frame = (workload == mirgud::PatternWorkload::motion ||
+                    workload == mirgud::PatternWorkload::noise) ? i : 0;
+                auto const rgb = mirgud::pattern_rgb888(workload, width, height, logical_frame, pattern_seed);
+                pregenerated_frames.push_back(mirgud::pattern_frame_from_rgb888(rgb, pixel_format, width, height));
+            }
+        }
         auto next_report = std::chrono::steady_clock::now();
         auto const pattern_start = std::chrono::steady_clock::now();
         benchmark_start = pattern_start;
@@ -1175,13 +1231,28 @@ try
                 if (lateness >= static_cast<uint64_t>(period.count()))
                     ++missed_pattern_deadlines;
             }
-            presenter.submit(mirgud::pattern_frame(workload, pixel_format, width, height,
-                generated_frames, pattern_seed));
+            if (pattern_generation == "pregenerated")
+            {
+                auto const& stored = pregenerated_frames[generated_frames % pregenerated_frames.size()];
+                presenter.submit({stored.width, stored.height, stored.format, stored.pixels});
+            }
+            else
+            {
+                auto const frame_start = std::chrono::steady_clock::now();
+                auto const rgb = mirgud::pattern_rgb888(workload, width, height, generated_frames, pattern_seed);
+                auto const conversion_start = std::chrono::steady_clock::now();
+                auto frame = mirgud::pattern_frame_from_rgb888(rgb, pixel_format, width, height);
+                auto const frame_end = std::chrono::steady_clock::now();
+                presenter.add_pattern_timings(elapsed_us(frame_start, conversion_start),
+                    elapsed_us(conversion_start, frame_end), elapsed_us(frame_start, frame_end));
+                presenter.submit(std::move(frame));
+            }
+            presenter.record_conversion_path(report_identity.conversion_path);
             ++generated_frames;
             next_frame += period;
             if (std::chrono::steady_clock::now() >= next_report)
             {
-                report(presenter.stats(), monitor_pid, false, benchmark_start, &previous_report);
+                report(presenter.stats(), monitor_pid, false, benchmark_start, &previous_report, report_identity);
                 next_report = std::chrono::steady_clock::now() + std::chrono::seconds{1};
             }
         }
@@ -1272,7 +1343,7 @@ try
             std::this_thread::sleep_for(std::chrono::milliseconds{100});
             if (std::chrono::steady_clock::now() >= next_report)
             {
-                report(presenter.stats(), monitor_pid, false, benchmark_start, &previous_report);
+                report(presenter.stats(), monitor_pid, false, benchmark_start, &previous_report, report_identity);
                 next_report += std::chrono::seconds{1};
             }
         }
@@ -1314,6 +1385,8 @@ try
         direct = std::make_unique<DirectCapture>(stream, pixel_format,
             source_mode == "extend" ? mirgud::RowOrder::top_down : mirgud::RowOrder::bottom_up);
         presenter.set_conversion_path(direct->source_format_info().conversion_path);
+        report_identity.source_mir_format = direct->source_format_info().pixel_format;
+        report_identity.conversion_path = direct->source_format_info().conversion_path;
     }
     catch (std::exception const& direct_error)
     {
@@ -1382,7 +1455,7 @@ try
             }
             if (std::chrono::steady_clock::now() >= next_report)
             {
-                report(presenter.stats(), monitor_pid, false, benchmark_start, &previous_report);
+                report(presenter.stats(), monitor_pid, false, benchmark_start, &previous_report, report_identity);
                 next_report += std::chrono::seconds{1};
             }
             std::this_thread::sleep_until(start + std::chrono::milliseconds{16 * capture_interval});
@@ -1392,6 +1465,8 @@ try
     {
         EglCapture capture{connection.get(), stream, width, height, pixel_format};
         presenter.set_conversion_path(mirgud::conversion_path_for(pixel_format, capture.mir_source_format()));
+        report_identity.source_mir_format = capture.mir_source_format();
+        report_identity.conversion_path = mirgud::conversion_path_for(pixel_format, capture.mir_source_format());
         bool first{};
         uint64_t prior_fingerprint{};
         bool have_prior_fingerprint{};
@@ -1451,7 +1526,7 @@ try
             }
             if (std::chrono::steady_clock::now() >= next_report)
             {
-                report(presenter.stats(), monitor_pid, false, benchmark_start, &previous_report);
+                report(presenter.stats(), monitor_pid, false, benchmark_start, &previous_report, report_identity);
                 next_report += std::chrono::seconds{1};
             }
             std::this_thread::sleep_until(start + std::chrono::milliseconds{16 * capture_interval});
@@ -1465,7 +1540,7 @@ try
     managed_status("PRESENTER_STOP_COMPLETE");
     if (!final_reported)
     {
-        report(presenter.stats(), monitor_pid, true, benchmark_start, &previous_report);
+        report(presenter.stats(), monitor_pid, true, benchmark_start, &previous_report, report_identity);
         final_reported = true;
     }
     presenter.rethrow_failure();
