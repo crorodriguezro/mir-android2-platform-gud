@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "defaults": {
+    "resolution": [1280, 720],
+    "warmup_seconds": 10,
+    "measured_seconds": 60,
+    "expected_pi_environment": {
+      "GUD_FRAME_DUMP_MODE": "disabled",
+      "GUD_FFS_READ_SIZE": "16384",
+      "GUD_TEST_OUTPUT_MODE": "1280x720"
+    }
+  },
+  "cases": [
+    {
+      "case_id": "qualification-motion-01fps-r1-rgb565",
+      "phase": "qualification", "round": 1, "order": 1,
+      "format": "rgb565", "source_format": "pregenerated-rgb888",
+      "workload": "motion", "seed": 1, "requested_fps": 1,
+      "warmup_seconds": 5, "measured_seconds": 15,
+      "expected_conversion_path": "rgb565-pack", "prerequisites": []
+    },
+    {
+      "case_id": "qualification-motion-01fps-r1-xrgb8888",
+      "phase": "qualification", "round": 1, "order": 2,
+      "format": "xrgb8888", "source_format": "pregenerated-rgb888",
+      "workload": "motion", "seed": 1, "requested_fps": 1,
+      "warmup_seconds": 5, "measured_seconds": 15,
+      "expected_conversion_path": "channel-reorder",
+      "prerequisites": ["qualification-motion-01fps-r1-rgb565"]
+    }
+  ]
+}
