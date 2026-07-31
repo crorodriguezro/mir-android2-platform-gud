@@ -95,9 +95,9 @@ def log(session, message):
 
 def make_session(manifest_path, session_id):
     session = BENCHMARK_ROOT / "sessions" / session_id
-    if session.exists():
+    if session.exists() and any(session.iterdir()):
         raise RuntimeError(f"session already exists: {session}")
-    session.mkdir(parents=True)
+    session.mkdir(parents=True, exist_ok=True)
     shutil.copy2(manifest_path, session / "manifest.yaml")
     atomic_write(session / "session.json", {
         "session_id": session_id, "created": now(), "manifest_sha256": sha256(manifest_path),
