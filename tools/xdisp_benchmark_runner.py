@@ -154,6 +154,13 @@ def command_for(args, case):
             "--pixel-format", case["format"]]
 
 
+def phone_sudo(args, command):
+    password = os.environ.get("XDISP_PHONE_SUDO_PASSWORD")
+    if not password:
+        raise RuntimeError("XDISP_PHONE_SUDO_PASSWORD is required for phone kernel collection")
+    return f"printf '%s\\n' '{password}' | sudo -S {command}"
+
+
 def validate(case, artifact, dry_run):
     if dry_run:
         return True, None
@@ -206,7 +213,7 @@ def run_case(args, session, case, dry_run):
             with (artifact / "stdout.log").open("w") as stdout, (artifact / "stderr.log").open("w") as stderr:
                 process = subprocess.run(["ssh", args.phone_host, remote], stdout=stdout, stderr=stderr, timeout=case["warmup_seconds"] + case["measured_seconds"] + 30)
             (artifact / "exit-status.txt").write_text(str(process.returncode) + "\n")
-            subprocess.run(["ssh", args.phone_host, "sudo dmesg"], stdout=(artifact / "phone-kernel.log").open("w"), check=False)
+            subprocess.run(["ssh", args.phone_host, phone_sudo(args, "dmesg")], stdout=(artifact / "phone-kernel.log").open("w"), check=False)
             subprocess.run(["ssh", args.pi_host, "journalctl -u gud-userspace.service -n 5000 --no-pager"], stdout=(artifact / "pi-service.log").open("w"), check=False)
         transition(session, state, "waiting-for-idle-reset", warmup_completed=now(), idle_reset_wait_started=now())
         transition(session, state, "running-measured", statistics_reset=True, measured_interval_started=now())
