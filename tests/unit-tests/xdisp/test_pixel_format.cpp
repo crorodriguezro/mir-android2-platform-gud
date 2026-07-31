@@ -246,9 +246,9 @@ TEST(MirgudTiming, uses_explicit_denominators_and_bounded_summary)
     EXPECT_EQ(30u, summary.max);
     EXPECT_EQ(20u, summary.average());
     EXPECT_EQ(10u, summary.percentile(0.0));
-    EXPECT_EQ(20u, summary.percentile(50.0));
-    EXPECT_EQ(30u, summary.percentile(95.0));
-    EXPECT_EQ(30u, summary.percentile(100.0));
+    EXPECT_EQ(50u, summary.percentile(50.0)); // Histogram reports bucket upper bounds.
+    EXPECT_EQ(50u, summary.percentile(95.0));
+    EXPECT_EQ(50u, summary.percentile(100.0));
 }
 
 TEST(MirgudTiming, uses_nearest_rank_percentiles)
