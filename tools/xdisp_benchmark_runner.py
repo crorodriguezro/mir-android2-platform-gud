@@ -125,7 +125,15 @@ def safety_probe(args, case, dry_run):
         return {"receiver_state": "InFlight", "environment": environment}
     if "scale_ms=" in journal and "scale_ms=0" not in journal:
         raise RuntimeError("Pi startup/log preflight lacks native scale_ms=0 evidence")
-    return {"receiver_state": "Idle", "environment": environment}
+    pi_binary = subprocess.check_output(["ssh", args.pi_host, f"sha256sum {args.pi_binary}"], text=True).split()[0]
+    phone_binary = subprocess.check_output(["ssh", args.phone_host, f"sha256sum {args.phone_mirgud}"], text=True).split()[0]
+    phone_module = subprocess.check_output(["ssh", args.phone_host, f"sha256sum {args.phone_module}"], text=True).split()[0]
+    hashes = {"pi_binary": pi_binary, "mirgud": phone_binary, "phone_module": phone_module}
+    expected_hashes = args.defaults.get("expected_hashes", {})
+    mismatch = {key: value for key, value in expected_hashes.items() if hashes.get(key) != value}
+    if mismatch:
+        raise RuntimeError(f"binary/module hash mismatch: {mismatch}")
+    return {"receiver_state": "Idle", "environment": environment, "hashes": hashes}
 
 
 def switch_format(args, case, dry_run):
@@ -298,6 +306,8 @@ def main():
     parser.add_argument("--phone-host", default="phablet@192.168.1.120")
     parser.add_argument("--pi-host", default="cristian@192.168.1.110")
     parser.add_argument("--phone-mirgud", default="/home/phablet/mirgud.bin")
+    parser.add_argument("--phone-module", default="/home/phablet/gud.xdisp-timing.ko")
+    parser.add_argument("--pi-binary", default="/home/cristian/gud-drm")
     args = parser.parse_args()
     manifest = read_manifest(args.manifest)
     args.defaults = manifest["defaults"]
@@ -312,14 +322,21 @@ def main():
         write_summary(session, manifest)
         print((session / "session-summary.md").read_text(), end="")
         return
-    for case in manifest["cases"]:
-        if args.stage != "all" and case["phase"] != args.stage:
-            continue
-        if not run_case(args, session, case, args.dry_run or args.command == "dry-run"):
+    selected = [{**manifest["defaults"], **case} for case in manifest["cases"]
+                if args.stage == "all" or case["phase"] == args.stage]
+    groups = {}
+    for case in selected:
+        groups.setdefault((case["phase"], case.get("rate", 0)), []).append(case)
+    for group in groups.values():
+        passed = True
+        for case in group:
+            passed = run_case(args, session, case, args.dry_run or args.command == "dry-run") and passed
+            if args.interrupt_after_case:
+                log(session, "deliberate runner interruption requested")
+                write_summary(session, manifest); return
+        if not passed:
+            log(session, f"shared rate failed phase={group[0]['phase']} rate={group[0].get('rate')}; stopping before next rate")
             write_summary(session, manifest); sys.exit(1)
-        if args.interrupt_after_case:
-            log(session, "deliberate runner interruption requested")
-            write_summary(session, manifest); return
     write_summary(session, manifest)
 
 

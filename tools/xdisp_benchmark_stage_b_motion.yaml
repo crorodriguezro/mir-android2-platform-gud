@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "defaults": {
+    "resolution": [1280, 720], "warmup_seconds": 10, "measured_seconds": 60,
+    "expected_pi_environment": {"GUD_FRAME_DUMP_MODE": "disabled", "GUD_FFS_READ_SIZE": "16384", "GUD_TEST_OUTPUT_MODE": "1280x720"},
+    "expected_hashes": {
+      "pi_binary": "4c3a33ec25dc09b520c4def5ad814b464aeb1ba13d52dcecaf77d1df98060f60",
+      "mirgud": "359689ea4b59519a3a7031bf6044e299696ab9b8e26484a4b017c7f61690dc1a",
+      "phone_module": "c95481f89378040ee55983d10364544c619236f05231d4e426bffaf64e1bda48"
+    }
+  },
+  "cases": [
+    {"case_id":"transport-motion-02fps-r1-rgb565","phase":"stage-b-motion","rate":2,"round":1,"order":1,"format":"rgb565","source_format":"pregenerated-rgb888","workload":"motion","seed":1,"requested_fps":2,"expected_conversion_path":"rgb565-pack","prerequisites":[]},
+    {"case_id":"transport-motion-02fps-r1-xrgb8888","phase":"stage-b-motion","rate":2,"round":1,"order":2,"format":"xrgb8888","source_format":"pregenerated-rgb888","workload":"motion","seed":1,"requested_fps":2,"expected_conversion_path":"channel-reorder","prerequisites":[]},
+    {"case_id":"transport-motion-02fps-r2-xrgb8888","phase":"stage-b-motion","rate":2,"round":2,"order":3,"format":"xrgb8888","source_format":"pregenerated-rgb888","workload":"motion","seed":1,"requested_fps":2,"expected_conversion_path":"channel-reorder","prerequisites":[]},
+    {"case_id":"transport-motion-02fps-r2-rgb565","phase":"stage-b-motion","rate":2,"round":2,"order":4,"format":"rgb565","source_format":"pregenerated-rgb888","workload":"motion","seed":1,"requested_fps":2,"expected_conversion_path":"rgb565-pack","prerequisites":[]},
+    {"case_id":"transport-motion-04fps-r1-rgb565","phase":"stage-b-motion","rate":4,"round":1,"order":1,"format":"rgb565","source_format":"pregenerated-rgb888","workload":"motion","seed":1,"requested_fps":4,"expected_conversion_path":"rgb565-pack","prerequisites":[]},
+    {"case_id":"transport-motion-04fps-r1-xrgb8888","phase":"stage-b-motion","rate":4,"round":1,"order":2,"format":"xrgb8888","source_format":"pregenerated-rgb888","workload":"motion","seed":1,"requested_fps":4,"expected_conversion_path":"channel-reorder","prerequisites":[]},
+    {"case_id":"transport-motion-04fps-r2-xrgb8888","phase":"stage-b-motion","rate":4,"round":2,"order":3,"format":"xrgb8888","source_format":"pregenerated-rgb888","workload":"motion","seed":1,"requested_fps":4,"expected_conversion_path":"channel-reorder","prerequisites":[]},
+    {"case_id":"transport-motion-04fps-r2-rgb565","phase":"stage-b-motion","rate":4,"round":2,"order":4,"format":"rgb565","source_format":"pregenerated-rgb888","workload":"motion","seed":1,"requested_fps":4,"expected_conversion_path":"rgb565-pack","prerequisites":[]},
+    {"case_id":"transport-motion-06fps-r1-rgb565","phase":"stage-b-motion","rate":6,"round":1,"order":1,"format":"rgb565","source_format":"pregenerated-rgb888","workload":"motion","seed":1,"requested_fps":6,"expected_conversion_path":"rgb565-pack","prerequisites":[]},
+    {"case_id":"transport-motion-06fps-r1-xrgb8888","phase":"stage-b-motion","rate":6,"round":1,"order":2,"format":"xrgb8888","source_format":"pregenerated-rgb888","workload":"motion","seed":1,"requested_fps":6,"expected_conversion_path":"channel-reorder","prerequisites":[]},
+    {"case_id":"transport-motion-06fps-r2-xrgb8888","phase":"stage-b-motion","rate":6,"round":2,"order":3,"format":"xrgb8888","source_format":"pregenerated-rgb888","workload":"motion","seed":1,"requested_fps":6,"expected_conversion_path":"channel-reorder","prerequisites":[]},
+    {"case_id":"transport-motion-06fps-r2-rgb565","phase":"stage-b-motion","rate":6,"round":2,"order":4,"format":"rgb565","source_format":"pregenerated-rgb888","workload":"motion","seed":1,"requested_fps":6,"expected_conversion_path":"rgb565-pack","prerequisites":[]},
+    {"case_id":"transport-motion-08fps-r1-rgb565","phase":"stage-b-motion","rate":8,"round":1,"order":1,"format":"rgb565","source_format":"pregenerated-rgb888","workload":"motion","seed":1,"requested_fps":8,"expected_conversion_path":"rgb565-pack","prerequisites":[]},
+    {"case_id":"transport-motion-08fps-r1-xrgb8888","phase":"stage-b-motion","rate":8,"round":1,"order":2,"format":"xrgb8888","source_format":"pregenerated-rgb888","workload":"motion","seed":1,"requested_fps":8,"expected_conversion_path":"channel-reorder","prerequisites":[]},
+    {"case_id":"transport-motion-08fps-r2-xrgb8888","phase":"stage-b-motion","rate":8,"round":2,"order":3,"format":"xrgb8888","source_format":"pregenerated-rgb888","workload":"motion","seed":1,"requested_fps":8,"expected_conversion_path":"channel-reorder","prerequisites":[]},
+    {"case_id":"transport-motion-08fps-r2-rgb565","phase":"stage-b-motion","rate":8,"round":2,"order":4,"format":"rgb565","source_format":"pregenerated-rgb888","workload":"motion","seed":1,"requested_fps":8,"expected_conversion_path":"rgb565-pack","prerequisites":[]},
+    {"case_id":"transport-motion-10fps-r1-rgb565","phase":"stage-b-motion","rate":10,"round":1,"order":1,"format":"rgb565","source_format":"pregenerated-rgb888","workload":"motion","seed":1,"requested_fps":10,"expected_conversion_path":"rgb565-pack","prerequisites":[]},
+    {"case_id":"transport-motion-10fps-r1-xrgb8888","phase":"stage-b-motion","rate":10,"round":1,"order":2,"format":"xrgb8888","source_format":"pregenerated-rgb888","workload":"motion","seed":1,"requested_fps":10,"expected_conversion_path":"channel-reorder","prerequisites":[]},
+    {"case_id":"transport-motion-10fps-r2-xrgb8888","phase":"stage-b-motion","rate":10,"round":2,"order":3,"format":"xrgb8888","source_format":"pregenerated-rgb888","workload":"motion","seed":1,"requested_fps":10,"expected_conversion_path":"channel-reorder","prerequisites":[]},
+    {"case_id":"transport-motion-10fps-r2-rgb565","phase":"stage-b-motion","rate":10,"round":2,"order":4,"format":"rgb565","source_format":"pregenerated-rgb888","workload":"motion","seed":1,"requested_fps":10,"expected_conversion_path":"rgb565-pack","prerequisites":[]}
+  ]
+}

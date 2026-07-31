@@ -8,6 +8,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER = ROOT / "tools/xdisp_benchmark_runner.py"
+STAGE_B = ROOT / "tools/xdisp_benchmark_stage_b_motion.yaml"
 
 
 class RunnerTest(unittest.TestCase):
@@ -40,6 +41,16 @@ class RunnerTest(unittest.TestCase):
         result = subprocess.run(["python3", str(RUNNER), "start", "--session", session, "--dry-run"], cwd=ROOT, text=True, capture_output=True)
         self.assertEqual(0, result.returncode, result.stderr)
         shutil.rmtree(path)
+
+    def test_stage_b_manifest_has_balanced_stable_rate_groups(self):
+        manifest = json.loads(STAGE_B.read_text())
+        rates = [2, 4, 6, 8, 10]
+        self.assertEqual(20, len(manifest["cases"]))
+        for rate in rates:
+            cases = [case for case in manifest["cases"] if case["rate"] == rate]
+            self.assertEqual(["rgb565", "xrgb8888", "xrgb8888", "rgb565"], [case["format"] for case in cases])
+            self.assertEqual([1, 1, 2, 2], [case["round"] for case in cases])
+            self.assertEqual([1, 2, 3, 4], [case["order"] for case in cases])
 
 
 if __name__ == "__main__":
