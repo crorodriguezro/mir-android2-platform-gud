@@ -976,6 +976,7 @@ try
     std::string socket;
     std::string source_mode{"primary"};
     std::string pixel_format_str{"rgb565"};
+    std::string source_pixel_format_str{"auto"};
     bool pattern{};
     uint32_t pattern_fps{1};
     uint32_t pattern_duration{};
@@ -1002,6 +1003,8 @@ try
             "source selection: primary (default) or extend (Aethercast-compatible)")
         ("pixel-format", po::value<std::string>(&pixel_format_str),
             "transport pixel format: rgb565 (default) or xrgb8888")
+        ("source-pixel-format", po::value<std::string>(&source_pixel_format_str),
+            "Mir source pixel format: auto (default), abgr8888, xbgr8888, argb8888, xrgb8888, rgb888, bgr888, or rgb565")
         ("size,s", po::value<std::vector<uint32_t>>()->multitoken(), "GUD/screencast size (default 1280 720)")
         ("cap-interval", po::value<uint32_t>(&capture_interval), "capture every N display intervals")
         ("monitor-pid", po::value<pid_t>(&monitor_pid), "sample this compositor PID's fd/sync_file counts")
@@ -1085,6 +1088,7 @@ try
         throw std::runtime_error{"managed fd options require --managed"};
 
     mirgud::PixelFormat pixel_format = mirgud::parse_pixel_format(pixel_format_str);
+    auto const requested_source_format = mirgud::parse_source_pixel_format(source_pixel_format_str);
     auto const workload = mirgud::parse_pattern_workload(pattern_workload);
 
     managed_mode = managed;
@@ -1295,11 +1299,25 @@ try
     std::cerr << "mirgud: xdisp " << (source_mode == "extend" ? "extend" : "capture") <<
         " region requested=(" << region.left << "," << region.top << "," << region.width << "," <<
         region.height << ")" << std::endl;
-    MirPixelFormat format{};
-    unsigned int formats{};
-    mir_connection_get_available_surface_formats(connection.get(), &format, 1, &formats);
-    if (!formats)
-        throw std::runtime_error{"Mir supplied no screencast pixel format"};
+    constexpr unsigned max_source_formats = 16;
+    std::vector<MirPixelFormat> available_formats(max_source_formats);
+    unsigned int format_count{};
+    mir_connection_get_available_surface_formats(connection.get(), available_formats.data(),
+        available_formats.size(), &format_count);
+    format_count = std::min<unsigned int>(format_count, available_formats.size());
+    available_formats.resize(format_count);
+    std::ostringstream available_ids;
+    std::ostringstream available_names;
+    for (std::size_t i = 0; i != available_formats.size(); ++i)
+    {
+        if (i) { available_ids << ','; available_names << ','; }
+        available_ids << static_cast<int>(available_formats[i]);
+        available_names << mirgud::mir_pixel_format_name(available_formats[i]);
+    }
+    std::cerr << "mirgud: available_mir_formats=" << available_ids.str() <<
+        " available_mir_format_names=" << available_names.str() <<
+        " requested_source_pixel_format=" << mirgud::source_pixel_format_name(requested_source_format) << std::endl;
+    auto const format = mirgud::select_source_pixel_format(requested_source_format, available_formats);
     auto* const spec = mir_create_screencast_spec(connection.get());
     mir_screencast_spec_set_width(spec, width);
     mir_screencast_spec_set_height(spec, height);
@@ -1327,6 +1345,14 @@ try
     if (after_screencast_configuration)
         log_topology("after-screencast", *after_screencast_configuration);
     auto* const stream = mir_screencast_get_buffer_stream(screencast.get());
+    if (requested_source_format != mirgud::SourcePixelFormat::auto_select)
+    {
+        auto const actual_format = graphics_region(stream).pixel_format;
+        if (actual_format != format)
+            throw std::runtime_error{"requested Mir source format " +
+                std::string{mirgud::source_pixel_format_name(requested_source_format)} +
+                " but graphics region returned " + mirgud::mir_pixel_format_name(actual_format)};
+    }
     if (!stream)
         throw std::runtime_error{"Mir screencast has no buffer stream"};
     std::cerr << "mirgud: Stage B virtual/screencast source enabled " << width << "x" << height <<

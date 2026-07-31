@@ -19,6 +19,23 @@ TEST(MirgudPixelFormat, parses_supported_names)
     EXPECT_THROW(mirgud::parse_pixel_format("rgb888"), std::runtime_error);
 }
 
+TEST(MirgudSourcePixelFormat, parses_names_and_selects_advertised_format)
+{
+    EXPECT_EQ(mirgud::SourcePixelFormat::xrgb8888, mirgud::parse_source_pixel_format("xrgb8888"));
+    EXPECT_EQ(mirgud::SourcePixelFormat::argb8888, mirgud::parse_source_pixel_format("argb8888"));
+    EXPECT_EQ("abgr8888", mirgud::mir_pixel_format_name(mir_pixel_format_abgr_8888));
+    EXPECT_EQ("xrgb8888", mirgud::mir_pixel_format_name(mir_pixel_format_xrgb_8888));
+    EXPECT_THROW(mirgud::parse_source_pixel_format("invalid"), std::runtime_error);
+
+    std::vector<MirPixelFormat> const formats{mir_pixel_format_abgr_8888, mir_pixel_format_argb_8888,
+        mir_pixel_format_xrgb_8888};
+    EXPECT_EQ(mir_pixel_format_abgr_8888,
+        mirgud::select_source_pixel_format(mirgud::SourcePixelFormat::auto_select, formats));
+    EXPECT_EQ(mir_pixel_format_xrgb_8888,
+        mirgud::select_source_pixel_format(mirgud::SourcePixelFormat::xrgb8888, formats));
+    EXPECT_THROW(mirgud::select_source_pixel_format(mirgud::SourcePixelFormat::rgb565, formats), std::runtime_error);
+}
+
 TEST(MirgudPixelFormat, reports_transport_bytes_per_pixel)
 {
     EXPECT_EQ(2u, mirgud::bytes_per_pixel(mirgud::PixelFormat::rgb565));

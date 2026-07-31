@@ -111,6 +111,91 @@ inline PixelFormat parse_pixel_format(std::string const& name)
     throw std::runtime_error{"pixel-format must be rgb565 or xrgb8888"};
 }
 
+enum class SourcePixelFormat
+{
+    auto_select,
+    abgr8888,
+    xbgr8888,
+    argb8888,
+    xrgb8888,
+    rgb888,
+    bgr888,
+    rgb565
+};
+
+inline const char* source_pixel_format_name(SourcePixelFormat format)
+{
+    switch (format)
+    {
+    case SourcePixelFormat::auto_select: return "auto";
+    case SourcePixelFormat::abgr8888: return "abgr8888";
+    case SourcePixelFormat::xbgr8888: return "xbgr8888";
+    case SourcePixelFormat::argb8888: return "argb8888";
+    case SourcePixelFormat::xrgb8888: return "xrgb8888";
+    case SourcePixelFormat::rgb888: return "rgb888";
+    case SourcePixelFormat::bgr888: return "bgr888";
+    case SourcePixelFormat::rgb565: return "rgb565";
+    }
+    return "unknown";
+}
+
+inline SourcePixelFormat parse_source_pixel_format(std::string const& name)
+{
+    if (name == "auto") return SourcePixelFormat::auto_select;
+    if (name == "abgr8888") return SourcePixelFormat::abgr8888;
+    if (name == "xbgr8888") return SourcePixelFormat::xbgr8888;
+    if (name == "argb8888") return SourcePixelFormat::argb8888;
+    if (name == "xrgb8888") return SourcePixelFormat::xrgb8888;
+    if (name == "rgb888") return SourcePixelFormat::rgb888;
+    if (name == "bgr888") return SourcePixelFormat::bgr888;
+    if (name == "rgb565") return SourcePixelFormat::rgb565;
+    throw std::runtime_error{"source-pixel-format must be auto, abgr8888, xbgr8888, argb8888, xrgb8888, rgb888, bgr888, or rgb565"};
+}
+
+inline MirPixelFormat mir_pixel_format(SourcePixelFormat format)
+{
+    switch (format)
+    {
+    case SourcePixelFormat::abgr8888: return mir_pixel_format_abgr_8888;
+    case SourcePixelFormat::xbgr8888: return mir_pixel_format_xbgr_8888;
+    case SourcePixelFormat::argb8888: return mir_pixel_format_argb_8888;
+    case SourcePixelFormat::xrgb8888: return mir_pixel_format_xrgb_8888;
+    case SourcePixelFormat::rgb888: return mir_pixel_format_rgb_888;
+    case SourcePixelFormat::bgr888: return mir_pixel_format_bgr_888;
+    case SourcePixelFormat::rgb565: return mir_pixel_format_rgb_565;
+    case SourcePixelFormat::auto_select: break;
+    }
+    throw std::runtime_error{"auto has no explicit Mir pixel format"};
+}
+
+inline const char* mir_pixel_format_name(MirPixelFormat format)
+{
+    switch (format)
+    {
+    case mir_pixel_format_abgr_8888: return "abgr8888";
+    case mir_pixel_format_xbgr_8888: return "xbgr8888";
+    case mir_pixel_format_argb_8888: return "argb8888";
+    case mir_pixel_format_xrgb_8888: return "xrgb8888";
+    case mir_pixel_format_rgb_888: return "rgb888";
+    case mir_pixel_format_bgr_888: return "bgr888";
+    case mir_pixel_format_rgb_565: return "rgb565";
+    default: return "unknown";
+    }
+}
+
+inline MirPixelFormat select_source_pixel_format(
+    SourcePixelFormat requested, std::vector<MirPixelFormat> const& available)
+{
+    if (available.empty())
+        throw std::runtime_error{"Mir supplied no screencast pixel format"};
+    if (requested == SourcePixelFormat::auto_select)
+        return available.front();
+    auto const selected = mir_pixel_format(requested);
+    if (std::find(available.begin(), available.end(), selected) == available.end())
+        throw std::runtime_error{"requested Mir source format " + std::string{source_pixel_format_name(requested)} + " is not advertised"};
+    return selected;
+}
+
 /*
  * Conversion path classification.
  *
