@@ -95,7 +95,8 @@ def log(session, message):
 
 def make_session(manifest_path, session_id):
     session = BENCHMARK_ROOT / "sessions" / session_id
-    if session.exists() and any(session.iterdir()):
+    precreated = {path.name for path in session.iterdir()} if session.exists() else set()
+    if precreated - {"runner-service.log"}:
         raise RuntimeError(f"session already exists: {session}")
     session.mkdir(parents=True, exist_ok=True)
     shutil.copy2(manifest_path, session / "manifest.yaml")
