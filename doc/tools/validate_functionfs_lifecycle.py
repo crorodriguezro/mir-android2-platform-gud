@@ -11,7 +11,12 @@ KERNEL_EVENTS = (
     "dwc2_queue_enter",
     "dwc2_queue_added",
     "dwc2_start_req_enter",
+    "dwc2_start_req_programming",
+    "dwc2_doeptsiz_written",
+    "dwc2_out_ep_enabled",
     "dwc2_start_req_return",
+    "dwc2_irq_enter",
+    "dwc2_ep1_out_epint_enter",
     "dwc2_out_irq",
     "dwc2_complete_enter",
     "dwc2_giveback_enter",
@@ -35,6 +40,7 @@ EVENTS = (
 )
 
 COVERAGE_FIELDS = (
+    "functionfs_trace_provider_qualified",
     "functionfs_kernel_trace_available",
     "dwc2_kernel_trace_available",
     "pi_userspace_trace_available",
@@ -49,7 +55,36 @@ DIAGNOSTIC_FIELDS = (
     "selected_wMaxPacketSize",
     "host_observed_wMaxPacketSize",
     "userspace_serialized_wMaxPacketSize",
+    "initial_doeptsiz",
+    "immediate_doeptsiz_readback",
+    "final_doeptsiz",
+    "initial_packet_count",
+    "final_packet_count",
+    "initial_transfer_bytes",
+    "final_transfer_bytes",
+    "initial_doepctl",
+    "final_doepctl",
+    "dma_mode",
 )
+
+CORE_DIAGNOSTIC_FIELDS = (
+    "core_state_start_req",
+    "core_state_irq_enter",
+    "core_state_irq_exit",
+    "gsnpsid",
+    "ghwcfg1",
+    "ghwcfg2",
+    "ghwcfg3",
+    "ghwcfg4",
+    "start_dsts",
+    "irq_enter_dsts",
+    "irq_exit_dsts",
+    "start_grxstsr",
+    "irq_enter_grxstsr",
+    "irq_exit_grxstsr",
+)
+
+DWC2_SUBCLASSIFICATION_FIELD = "dwc2_subclassification"
 
 
 def has_event(text, event):
@@ -104,10 +139,174 @@ def diagnostic_value(name, *texts):
     return ""
 
 
+def event_records(text, event):
+    """Return event-local records, including logs with several test events."""
+    marker = re.compile(
+        r'(?:\bevent\s*=\s*(?:"[^"]+"|[^\s,}]+)|"event"\s*:\s*"[^"]+")'
+    )
+    matches = list(marker.finditer(text))
+    records = []
+    for index, match in enumerate(matches):
+        if not has_event(match.group(0), event):
+            continue
+        line_end = text.find("\n", match.end())
+        if line_end < 0:
+            line_end = len(text)
+        if index + 1 < len(matches):
+            line_end = min(line_end, matches[index + 1].start())
+        records.append(text[match.start():line_end])
+    return records
+
+
+def event_value(text, event, name, *, last=False):
+    records = event_records(text, event)
+    if last:
+        records.reverse()
+    for record in records:
+        value = diagnostic_value(name, record)
+        if value:
+            return value
+    return ""
+
+
+def integer_value(value):
+    try:
+        return int(value, 0)
+    except (TypeError, ValueError):
+        return None
+
+
+def dwc2_diagnostics(kernel_text):
+    final_doeptsiz = event_value(
+        kernel_text, "dwc2_irq_enter", "doeptsiz", last=True
+    ) or event_value(kernel_text, "dwc2_ep1_out_epint_enter", "doeptsiz", last=True)
+    final_doepctl = event_value(
+        kernel_text, "dwc2_irq_enter", "doepctl", last=True
+    ) or event_value(kernel_text, "dwc2_ep1_out_epint_enter", "doepctl", last=True)
+    final_size = integer_value(final_doeptsiz)
+    return {
+        "initial_doeptsiz": event_value(
+            kernel_text, "dwc2_start_req_programming", "initial_doeptsiz"
+        ),
+        "immediate_doeptsiz_readback": event_value(
+            kernel_text, "dwc2_doeptsiz_written", "immediate_readback"
+        ),
+        "final_doeptsiz": final_doeptsiz,
+        "initial_packet_count": event_value(
+            kernel_text, "dwc2_start_req_programming", "packet_count"
+        ),
+        "final_packet_count": "" if final_size is None else str((final_size >> 19) & 0x3ff),
+        "initial_transfer_bytes": event_value(
+            kernel_text, "dwc2_start_req_programming", "remaining_length"
+        ),
+        "final_transfer_bytes": "" if final_size is None else str(final_size & 0x7ffff),
+        "initial_doepctl": event_value(
+            kernel_text, "dwc2_start_req_programming", "initial_doepctl"
+        ),
+        "final_doepctl": final_doepctl,
+        "dma_mode": event_value(
+            kernel_text, "dwc2_start_req_programming", "dma_mode"
+        ),
+    }
+
+
+def dwc2_core_diagnostics(kernel_text):
+    def phase_value(phase, name):
+        for record in event_records(kernel_text, "dwc2_core_state"):
+            if diagnostic_value("phase", record) == phase:
+                return diagnostic_value(name, record)
+        return ""
+
+    start_gsnpsid = phase_value("start_req", "gsnpsid")
+    irq_enter_gsnpsid = phase_value("irq_enter", "gsnpsid")
+    irq_exit_gsnpsid = phase_value("irq_exit", "gsnpsid")
+    return {
+        "core_state_start_req": bool(start_gsnpsid),
+        "core_state_irq_enter": bool(irq_enter_gsnpsid),
+        "core_state_irq_exit": bool(irq_exit_gsnpsid),
+        "gsnpsid": start_gsnpsid or irq_enter_gsnpsid or irq_exit_gsnpsid,
+        "ghwcfg1": phase_value("start_req", "ghwcfg1"),
+        "ghwcfg2": phase_value("start_req", "ghwcfg2"),
+        "ghwcfg3": phase_value("start_req", "ghwcfg3"),
+        "ghwcfg4": phase_value("start_req", "ghwcfg4"),
+        "start_dsts": phase_value("start_req", "dsts"),
+        "irq_enter_dsts": phase_value("irq_enter", "dsts"),
+        "irq_exit_dsts": phase_value("irq_exit", "dsts"),
+        "start_grxstsr": phase_value("start_req", "grxstsr"),
+        "irq_enter_grxstsr": phase_value("irq_enter", "grxstsr"),
+        "irq_exit_grxstsr": phase_value("irq_exit", "grxstsr"),
+    }
+
+
+def dwc2_subclassification(phone_text, kernel_text, observed):
+    """Classify only the fully evidenced EP1 completion-bit boundary."""
+    endpoint = event_value(kernel_text, "dwc2_start_req_programming", "endpoint")
+    direction = event_value(kernel_text, "dwc2_start_req_programming", "direction")
+    programming_values = {
+        name: integer_value(
+            event_value(kernel_text, "dwc2_start_req_programming", name)
+        )
+        for name in (
+            "req_length",
+            "remaining_length",
+            "maxpacket",
+            "packet_count",
+            "calculated_epsize",
+        )
+    }
+    doeptsiz_values = {
+        name: integer_value(event_value(kernel_text, "dwc2_doeptsiz_written", name))
+        for name in ("intended_value", "immediate_readback")
+    }
+    programming_correct = programming_values == {
+        "req_length": 12800,
+        "remaining_length": 12800,
+        "maxpacket": 512,
+        "packet_count": 25,
+        "calculated_epsize": 0x00C83200,
+    } and doeptsiz_values == {
+        "intended_value": 0x00C83200,
+        "immediate_readback": 0x00C83200,
+    }
+    enabled = event_value(
+        kernel_text, "dwc2_out_ep_enabled", "epena"
+    )
+    irq_records = event_records(kernel_text, "dwc2_irq_enter")
+    irq_doepint = [integer_value(diagnostic_value("doepint", record)) for record in irq_records]
+    irq_daint = [integer_value(diagnostic_value("daint", record)) for record in irq_records]
+    xfercompl_absent = bool(irq_doepint) and all(
+        value is not None and not (value & 0x1) for value in irq_doepint
+    )
+    ep1_daint_absent = bool(irq_daint) and all(
+        value is not None and not (value & (1 << 17)) for value in irq_daint
+    )
+    _, host_completed = phone_events(phone_text)
+    proven = (
+        observed["dwc2_start_req_programming"]
+        and endpoint == "1"
+        and direction == "out"
+        and programming_correct
+        and host_completed
+        and observed["dwc2_doeptsiz_written"]
+        and observed["dwc2_out_ep_enabled"]
+        and enabled == "1"
+        and xfercompl_absent
+        and ep1_daint_absent
+        and not observed["dwc2_complete_enter"]
+    )
+    return "dwc2_ep1_xfercompl_missing" if proven else ""
+
+
 def coverage(pi_text, phone_text, kernel_text, observed):
     kernel_open = has_event(kernel_text, "pi_kernel_trace_available")
     functionfs_provider = has_event(kernel_text, "ffs_trace_provider_active")
     functionfs_io = has_event(kernel_text, "ffs_io_observed")
+    functionfs_payload_io = any(
+        diagnostic_value("endpoint", record) == "1"
+        and diagnostic_value("direction", record) == "out"
+        and diagnostic_value("requested_length", record) == "12800"
+        for record in event_records(kernel_text, "ffs_io_observed")
+    )
     dwc2_io = observed["dwc2_queue_enter"]
     phone_submitted, _ = phone_events(phone_text)
     capture_start = has_event(kernel_text, "capture_open") or kernel_open
@@ -117,9 +316,10 @@ def coverage(pi_text, phone_text, kernel_text, observed):
     )
 
     return {
-        # A provider marker plus an unfiltered request record proves both the
-        # patched FunctionFS implementation and coverage of this request.
-        "functionfs_kernel_trace_available": functionfs_provider and functionfs_io,
+        # EP0 is sufficient to qualify provider wiring before a payload.  The
+        # payload evidence gate separately requires the tracked EP1 request.
+        "functionfs_trace_provider_qualified": functionfs_provider and functionfs_io,
+        "functionfs_kernel_trace_available": functionfs_provider and functionfs_payload_io,
         "dwc2_kernel_trace_available": kernel_open,
         "pi_userspace_trace_available": observed["exact_read_started"],
         "phone_trace_available": phone_submitted,
@@ -141,9 +341,16 @@ def validate(pi_text, phone_text, kernel_text):
     observed.update(coverage(pi_text, phone_text, kernel_text, observed))
     for field in DIAGNOSTIC_FIELDS:
         observed[field] = diagnostic_value(field, pi_text, phone_text, kernel_text)
+    observed.update(dwc2_diagnostics(kernel_text))
+    observed.update(dwc2_core_diagnostics(kernel_text))
+    observed[DWC2_SUBCLASSIFICATION_FIELD] = dwc2_subclassification(
+        phone_text, kernel_text, observed
+    )
     observed["reason"] = ""
 
-    if "classification=invalid_kernel_read_completion" in pi_text:
+    if re.search(
+        r'\bclassification\s*=\s*"?invalid_kernel_read_completion"?', pi_text
+    ):
         return "invalid_kernel_read_completion", observed
     if gadget_configuration_failed(phone_text, kernel_text):
         observed["reason"] = "set_configuration_functionfs_endpoint_enable_failed"
@@ -214,6 +421,12 @@ def main():
         print(f"{field}={str(observed[field]).lower()}")
     for field in DIAGNOSTIC_FIELDS:
         print(f"{field}={observed[field]}")
+    for field in CORE_DIAGNOSTIC_FIELDS:
+        value = observed[field]
+        if isinstance(value, bool):
+            value = str(value).lower()
+        print(f"{field}={value}")
+    print(f"{DWC2_SUBCLASSIFICATION_FIELD}={observed[DWC2_SUBCLASSIFICATION_FIELD]}")
     print(f"classification={classification}")
     if observed["reason"]:
         print(f"reason={observed['reason']}")
