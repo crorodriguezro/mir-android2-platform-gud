@@ -273,6 +273,7 @@ public:
             throw std::logic_error{"GUD initial modeset was requested twice"};
 
         std::cerr << "mirgud: V0.1 initial modeset begin" << std::endl;
+        log_kms_state(frames[0], true);
         std::memset(frames[0].map, 0, frames[0].dumb.size);
         try
         {
@@ -423,6 +424,7 @@ private:
 
     void commit(KmsFrame const& frame, bool modeset)
     {
+        log_commit_state(frame, modeset);
         auto* const request = drmModeAtomicAlloc();
         if (!request)
             throw std::runtime_error{"cannot allocate GUD atomic request"};
@@ -445,6 +447,48 @@ private:
             auto const saved_errno = errno;
             throw std::system_error{saved_errno, std::system_category(), "GUD atomic commit failed"};
         }
+    }
+
+    void log_kms_state(KmsFrame const& frame, bool modeset) const
+    {
+        std::cerr << "mirgud: kms card_fd=" << fd
+            << " drm_master=" << drmIsMaster(fd)
+            << " connector=" << connector
+            << " crtc=" << crtc
+            << " plane=" << plane
+            << " mode_blob=" << mode_blob
+            << " mode=" << mode.name << " " << mode.hdisplay << "x" << mode.vdisplay
+            << " vrefresh=" << mode.vrefresh
+            << " fb=" << frame.framebuffer
+            << " fb_format=" << mirgud::format_name(pixel_format)
+            << " fb_width=" << frame.dumb.width
+            << " fb_height=" << frame.dumb.height
+            << " fb_pitch=" << frame.dumb.pitch
+            << " fb_size=" << frame.dumb.size
+            << " modeset=" << modeset
+            << std::endl;
+    }
+
+    void log_commit_state(KmsFrame const& frame, bool modeset) const
+    {
+        auto const src_w = static_cast<uint64_t>(width) << 16;
+        auto const src_h = static_cast<uint64_t>(height) << 16;
+        std::cerr << "mirgud: atomic request"
+            << " flags=" << (modeset ? "ALLOW_MODESET" : "0")
+            << " connector.CRTC_ID(" << properties.connector_crtc << ")=" << crtc
+            << " crtc.MODE_ID(" << properties.crtc_mode << ")=" << mode_blob
+            << " crtc.ACTIVE(" << properties.crtc_active << ")=1"
+            << " plane.FB_ID(" << properties.plane_fb << ")=" << frame.framebuffer
+            << " plane.CRTC_ID(" << properties.plane_crtc << ")=" << crtc
+            << " plane.SRC_X(" << properties.src_x << ")=0"
+            << " plane.SRC_Y(" << properties.src_y << ")=0"
+            << " plane.SRC_W(" << properties.src_w << ")=" << src_w
+            << " plane.SRC_H(" << properties.src_h << ")=" << src_h
+            << " plane.CRTC_X(" << properties.crtc_x << ")=0"
+            << " plane.CRTC_Y(" << properties.crtc_y << ")=0"
+            << " plane.CRTC_W(" << properties.crtc_w << ")=" << width
+            << " plane.CRTC_H(" << properties.crtc_h << ")=" << height
+            << std::endl;
     }
 
     void teardown()
