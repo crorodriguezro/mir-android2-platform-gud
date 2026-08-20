@@ -40,6 +40,7 @@ struct Stats
     TimingSummary conversion_us{};
     TimingSummary release_us{};
     TimingSummary capture_cycle_us{};
+    TimingSummary enqueue_us{};
     TimingSummary submit_us{};
     TimingSummary pattern_source_generation_us{};
     TimingSummary pattern_format_conversion_us{};
@@ -122,6 +123,7 @@ public:
 
     void submit(Frame frame)
     {
+        auto const enqueue_start = std::chrono::steady_clock::now();
         std::unique_ptr<Frame> incoming;
         try
         {
@@ -132,12 +134,20 @@ public:
             std::lock_guard<std::mutex> lock{mutex};
             ++statistics.submitted;
             ++statistics.submit_failures;
+            statistics.enqueue_us.add(static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - enqueue_start).count()));
             throw;
         }
         {
             std::lock_guard<std::mutex> lock{mutex};
             if (stopping)
+            {
+                statistics.enqueue_us.add(static_cast<uint64_t>(
+                    std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::steady_clock::now() - enqueue_start).count()));
                 return;
+            }
             ++statistics.submitted;
             if (pending)
             {
@@ -149,6 +159,9 @@ public:
                 statistics.max_pending_observed = std::max(statistics.max_pending_observed, statistics.pending_frames);
             }
             pending = std::move(incoming);
+            statistics.enqueue_us.add(static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - enqueue_start).count()));
         }
         wakeup.notify_one();
     }

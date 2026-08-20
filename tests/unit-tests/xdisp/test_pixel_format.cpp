@@ -417,6 +417,7 @@ TEST(MirgudPresenter, accounts_for_one_presented_frame)
     EXPECT_EQ(0u, stats.dropped);
     EXPECT_EQ(0u, stats.cancelled);
     EXPECT_EQ(0u, stats.submit_failures);
+    EXPECT_EQ(1u, stats.enqueue_us.count);
     EXPECT_TRUE(mirgud::accounting_ok(stats));
 }
 
@@ -480,7 +481,53 @@ TEST(MirgudPresenter, accounts_for_pending_replacement)
     EXPECT_EQ(1u, stats.max_in_flight_observed);
     EXPECT_EQ(2u, stats.presented);
     EXPECT_EQ(1u, stats.dropped);
+    EXPECT_EQ(3u, stats.enqueue_us.count);
     EXPECT_TRUE(mirgud::accounting_ok(stats));
+}
+
+TEST(MirgudPresenter, records_enqueue_latency_separately_from_slow_presentation)
+{
+    std::mutex mutex;
+    std::condition_variable wakeup;
+    bool entered{};
+    bool release{};
+    unsigned calls{};
+    mirgud::LatestFramePresenter presenter{[&](mirgud::Frame const&)
+    {
+        std::unique_lock<std::mutex> lock{mutex};
+        ++calls;
+        entered = calls == 1;
+        wakeup.notify_one();
+        if (entered)
+            wakeup.wait(lock, [&] { return release; });
+    }};
+    presenter.submit(frame());
+    {
+        std::unique_lock<std::mutex> lock{mutex};
+        ASSERT_TRUE(wakeup.wait_for(lock, std::chrono::seconds{1}, [&] { return entered; }));
+    }
+
+    auto const enqueue_start = std::chrono::steady_clock::now();
+    EXPECT_NO_THROW(presenter.submit(frame()));
+    EXPECT_LT(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - enqueue_start), std::chrono::milliseconds{100});
+
+    std::this_thread::sleep_for(std::chrono::milliseconds{20});
+    {
+        std::lock_guard<std::mutex> lock{mutex};
+        release = true;
+    }
+    wakeup.notify_one();
+    {
+        std::unique_lock<std::mutex> lock{mutex};
+        ASSERT_TRUE(wakeup.wait_for(lock, std::chrono::seconds{1}, [&] { return calls == 2; }));
+    }
+    presenter.stop();
+
+    auto const stats = presenter.stats();
+    EXPECT_EQ(2u, stats.enqueue_us.count);
+    EXPECT_GE(stats.submit_us.max, 20000u);
+    EXPECT_LT(stats.enqueue_us.max, stats.submit_us.max);
 }
 
 TEST(MirgudPresenter, snapshot_is_accounting_valid_while_presenting)
@@ -496,7 +543,7 @@ TEST(MirgudPresenter, snapshot_is_accounting_valid_while_presenting)
         wakeup.notify_one();
         wakeup.wait(lock, [&] { return release; });
     }};
-    presenter.submit(frame());
+    EXPECT_NO_THROW(presenter.submit(frame()));
     {
         std::unique_lock<std::mutex> lock{mutex};
         wakeup.wait(lock, [&] { return entered; });
@@ -572,7 +619,7 @@ TEST(MirgudPresenter, records_failed_presentation_attempts)
         failed = true;
         wakeup.notify_one();
     }};
-    presenter.submit(frame());
+    EXPECT_NO_THROW(presenter.submit(frame()));
     {
         std::unique_lock<std::mutex> lock{mutex};
         wakeup.wait(lock, [&] { return failed; });
@@ -583,6 +630,7 @@ TEST(MirgudPresenter, records_failed_presentation_attempts)
     EXPECT_EQ(1u, stats.submitted);
     EXPECT_EQ(0u, stats.presented);
     EXPECT_EQ(1u, stats.submit_failures);
+    EXPECT_EQ(1u, stats.enqueue_us.count);
     EXPECT_EQ(1u, stats.submit_us.count);
     EXPECT_TRUE(mirgud::accounting_ok(stats));
     EXPECT_THROW(presenter.rethrow_failure(), std::runtime_error);

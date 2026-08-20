@@ -995,6 +995,9 @@ void report(mirgud::Stats const& stats, pid_t monitor_pid, bool final,
     report_timing("conversion", stats.conversion_us);
     report_timing("release", stats.release_us);
     report_timing("capture_cycle", stats.capture_cycle_us);
+    report_timing("enqueue", stats.enqueue_us);
+    // Kept as submit_* for compatibility with existing telemetry consumers.
+    // This measures the worker-owned present() call, not producer enqueue.
     report_timing("submit", stats.submit_us);
     if (std::string{identity.pattern_generation} == "per-frame")
     {

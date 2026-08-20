@@ -34,6 +34,23 @@ Under this architecture, E2-T01 means reconciling and proving the
 source/render/capture gate for the `xdispd`/`mirgud` path, not reviving the old
 Android2 synthetic target.
 
+### E2-T03 producer/worker boundary
+
+The capture/main thread creates a client-owned frame and calls
+`LatestFramePresenter::submit()`. That method allocates the replacement frame,
+holds its mutex only long enough to replace the single pending slot, then wakes
+the worker. It does not perform GUD, KMS, or USB I/O.
+
+The worker moves the pending frame out of that slot and releases the mutex
+before calling `present(frame)`. Consequently, one frame can be in flight and
+one newer frame can be pending; newer pending frames replace older pending
+frames. GUD/KMS/USB waits are confined to the worker.
+
+`enqueue_us` measures the producer-visible `submit()` call. The historical
+`submit_us` metric remains for parser compatibility and measures the
+worker-owned `present(frame)` duration. It is not evidence of producer
+blocking.
+
 ### Installed versions and source match
 
 The phone was audited on 2026-07-29 with no `mirgud` process running.
