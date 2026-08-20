@@ -1216,42 +1216,6 @@ try
         report_identity.pattern_seed = pattern_seed;
         presenter.set_conversion_path(report_identity.conversion_path);
     }
-    bool final_reported{};
-    auto stop_report_rethrow = [&]
-    {
-        if (!final_reported)
-        {
-            presenter.stop();
-            report(presenter.stats(), monitor_pid, true, benchmark_start, &previous_report, report_identity);
-            final_reported = true;
-        }
-        presenter.rethrow_failure();
-    };
-    auto finalizer = make_scope_exit([&]
-    {
-        if (!final_reported)
-        {
-            try
-            {
-                presenter.stop();
-                report(presenter.stats(), monitor_pid, true, benchmark_start, &previous_report, report_identity);
-                final_reported = true;
-                try
-                {
-                    presenter.rethrow_failure();
-                }
-                catch (std::exception const& error)
-                {
-                    std::cerr << "mirgud: presenter failure during finalization: " << error.what() << std::endl;
-                }
-            }
-            catch (std::exception const& error)
-            {
-                std::cerr << "mirgud: final report failure: " << error.what() << std::endl;
-            }
-        }
-    });
-
     if (pattern)
     {
         std::cerr << "mirgud: generated workload=" << pattern_workload <<
@@ -1332,7 +1296,9 @@ try
             " generated_frames=" << generated_frames <<
             " missed_pattern_deadlines=" << missed_pattern_deadlines <<
             " maximum_schedule_lateness_us=" << maximum_schedule_lateness_us << std::endl;
-        stop_report_rethrow();
+        presenter.stop();
+        report(presenter.stats(), monitor_pid, true, benchmark_start, &previous_report, report_identity);
+        presenter.rethrow_failure();
         return EXIT_SUCCESS;
     }
 
@@ -1426,6 +1392,49 @@ try
     std::cerr << "mirgud: Stage B virtual/screencast source enabled " << width << "x" << height <<
         " requested_format=" << static_cast<int>(format) << " transport=" <<
         mirgud::format_name(pixel_format) << std::endl;
+
+    bool final_reported{};
+    auto release_kms = [&]
+    {
+        if (kms)
+            kms.reset();
+    };
+    auto stop_report_rethrow = [&]
+    {
+        if (!final_reported)
+        {
+            presenter.stop();
+            release_kms();
+            report(presenter.stats(), monitor_pid, true, benchmark_start, &previous_report, report_identity);
+            final_reported = true;
+        }
+        presenter.rethrow_failure();
+    };
+    auto finalizer = make_scope_exit([&]
+    {
+        if (!final_reported)
+        {
+            try
+            {
+                presenter.stop();
+                release_kms();
+                report(presenter.stats(), monitor_pid, true, benchmark_start, &previous_report, report_identity);
+                final_reported = true;
+                try
+                {
+                    presenter.rethrow_failure();
+                }
+                catch (std::exception const& error)
+                {
+                    std::cerr << "mirgud: presenter failure during finalization: " << error.what() << std::endl;
+                }
+            }
+            catch (std::exception const& error)
+            {
+                std::cerr << "mirgud: final report failure: " << error.what() << std::endl;
+            }
+        }
+    });
 
     if (extend_hold)
     {
