@@ -1190,6 +1190,19 @@ try
         if (kms)
             kms->present(frame);
     }, [] { managed_status("ACTIVE"); }, [] { running = false; }};
+    bool presentation_and_kms_released{};
+    auto const release_presentation_and_kms = [&]
+    {
+        if (presentation_and_kms_released)
+            return;
+        presentation_and_kms_released = true;
+        managed_status("PRESENTER_STOP_BEGIN");
+        presenter.stop();
+        managed_status("PRESENTER_STOP_COMPLETE");
+        if (kms)
+            kms.reset();
+    };
+    auto presentation_and_kms_guard = make_scope_exit([&] { release_presentation_and_kms(); });
     auto benchmark_start = std::chrono::steady_clock::now();
     ReportSnapshot previous_report{};
     ReportIdentity report_identity{pixel_format};
@@ -1304,7 +1317,8 @@ try
 
     auto const connection = mir::raii::deleter_for(mir_connect_sync(socket.empty() ? nullptr : socket.c_str(),
         source_mode == "extend" ? "aethercast screencast client" : "mirgud"),
-        [](MirConnection* value) {
+        [&release_presentation_and_kms](MirConnection* value) {
+            release_presentation_and_kms();
             if (value)
             {
                 managed_status("MIR_CONNECTION_RELEASE_BEGIN");
@@ -1363,7 +1377,8 @@ try
         mir_screencast_spec_set_number_of_buffers(spec, 2);
     }
     auto const screencast = mir::raii::deleter_for(mir_screencast_create_sync(spec),
-        [](MirScreencast* value) {
+        [&release_presentation_and_kms](MirScreencast* value) {
+            release_presentation_and_kms();
             if (value)
             {
                 managed_status("SCREENCAST_RELEASE_BEGIN");
@@ -1394,17 +1409,11 @@ try
         mirgud::format_name(pixel_format) << std::endl;
 
     bool final_reported{};
-    auto release_kms = [&]
-    {
-        if (kms)
-            kms.reset();
-    };
     auto stop_report_rethrow = [&]
     {
         if (!final_reported)
         {
-            presenter.stop();
-            release_kms();
+            release_presentation_and_kms();
             report(presenter.stats(), monitor_pid, true, benchmark_start, &previous_report, report_identity);
             final_reported = true;
         }
@@ -1416,8 +1425,7 @@ try
         {
             try
             {
-                presenter.stop();
-                release_kms();
+                release_presentation_and_kms();
                 report(presenter.stats(), monitor_pid, true, benchmark_start, &previous_report, report_identity);
                 final_reported = true;
                 try
@@ -1660,15 +1668,14 @@ try
     if (stop_signal_received)
         managed_status("TERM_OBSERVED");
     managed_status("CAPTURE_LOOP_EXIT");
-    managed_status("PRESENTER_STOP_BEGIN");
-    presenter.stop();
-    managed_status("PRESENTER_STOP_COMPLETE");
+    release_presentation_and_kms();
     if (!final_reported)
     {
         report(presenter.stats(), monitor_pid, true, benchmark_start, &previous_report, report_identity);
         final_reported = true;
     }
     presenter.rethrow_failure();
+    presentation_and_kms_guard.release();
     finalizer.release();
     managed_status("PROCESS_EXIT");
     return EXIT_SUCCESS;
