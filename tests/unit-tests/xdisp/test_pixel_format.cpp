@@ -409,6 +409,10 @@ TEST(MirgudPresenter, accounts_for_one_presented_frame)
 
     auto const stats = presenter.stats();
     EXPECT_EQ(1u, stats.submitted);
+    EXPECT_EQ(0u, stats.pending_frames);
+    EXPECT_EQ(1u, stats.max_pending_observed);
+    EXPECT_EQ(0u, stats.in_flight);
+    EXPECT_EQ(1u, stats.max_in_flight_observed);
     EXPECT_EQ(1u, stats.presented);
     EXPECT_EQ(0u, stats.dropped);
     EXPECT_EQ(0u, stats.cancelled);
@@ -426,6 +430,10 @@ TEST(MirgudPresenter, resets_idle_statistics_for_a_measured_interval)
     EXPECT_TRUE(presenter.reset_statistics());
     auto const stats = presenter.stats();
     EXPECT_EQ(0u, stats.submitted);
+    EXPECT_EQ(0u, stats.pending_frames);
+    EXPECT_EQ(0u, stats.max_pending_observed);
+    EXPECT_EQ(0u, stats.in_flight);
+    EXPECT_EQ(0u, stats.max_in_flight_observed);
     EXPECT_EQ(0u, stats.presented);
     EXPECT_TRUE(mirgud::accounting_ok(stats));
 }
@@ -466,6 +474,10 @@ TEST(MirgudPresenter, accounts_for_pending_replacement)
 
     auto const stats = presenter.stats();
     EXPECT_EQ(3u, stats.submitted);
+    EXPECT_EQ(0u, stats.pending_frames);
+    EXPECT_EQ(1u, stats.max_pending_observed);
+    EXPECT_EQ(0u, stats.in_flight);
+    EXPECT_EQ(1u, stats.max_in_flight_observed);
     EXPECT_EQ(2u, stats.presented);
     EXPECT_EQ(1u, stats.dropped);
     EXPECT_TRUE(mirgud::accounting_ok(stats));
@@ -491,6 +503,9 @@ TEST(MirgudPresenter, snapshot_is_accounting_valid_while_presenting)
     }
     auto const active = presenter.stats();
     EXPECT_EQ(1u, active.in_flight);
+    EXPECT_EQ(0u, active.pending_frames);
+    EXPECT_EQ(1u, active.max_pending_observed);
+    EXPECT_EQ(1u, active.max_in_flight_observed);
     EXPECT_EQ(0u, active.presented);
     EXPECT_TRUE(mirgud::accounting_ok(active));
     {
@@ -535,6 +550,9 @@ TEST(MirgudPresenter, cancels_pending_frame_once_during_stop)
 
     auto const stats = presenter.stats();
     EXPECT_EQ(2u, stats.submitted);
+    EXPECT_EQ(0u, stats.pending_frames);
+    EXPECT_EQ(1u, stats.max_pending_observed);
+    EXPECT_EQ(1u, stats.max_in_flight_observed);
     EXPECT_EQ(1u, stats.presented);
     EXPECT_EQ(1u, stats.cancelled);
     EXPECT_TRUE(mirgud::accounting_ok(stats));
@@ -599,6 +617,9 @@ TEST(MirgudPresenter, reports_zero_denominator_percentages_and_final_accounting)
     auto const report = mirgud::format_accounting_fields(stats, true);
     EXPECT_NE(std::string::npos, report.find("report_kind=final"));
     EXPECT_NE(std::string::npos, report.find("final=true"));
+    EXPECT_NE(std::string::npos, report.find("pending_frames=0"));
+    EXPECT_NE(std::string::npos, report.find("max_pending_observed=0"));
+    EXPECT_NE(std::string::npos, report.find("max_in_flight_observed=0"));
     EXPECT_NE(std::string::npos, report.find("frames_cancelled=0"));
     EXPECT_NE(std::string::npos, report.find("accounting_ok=true"));
 }

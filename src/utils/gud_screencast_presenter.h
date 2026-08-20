@@ -3,6 +3,7 @@
 
 #include "gud_screencast_format.h"
 
+#include <algorithm>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -21,7 +22,10 @@ struct Stats
 {
     uint64_t received{};
     uint64_t submitted{};
+    uint64_t pending_frames{};
+    uint64_t max_pending_observed{};
     uint64_t in_flight{};
+    uint64_t max_in_flight_observed{};
     uint64_t presented{};
     uint64_t dropped{};
     uint64_t cancelled{};
@@ -71,7 +75,10 @@ inline std::string format_accounting_fields(Stats const& stats, bool final)
         " final=" << (final ? "true" : "false") <<
         " frames_received=" << stats.received <<
         " frames_submitted=" << stats.submitted <<
+        " pending_frames=" << stats.pending_frames <<
+        " max_pending_observed=" << stats.max_pending_observed <<
         " frames_in_flight=" << stats.in_flight <<
+        " max_in_flight_observed=" << stats.max_in_flight_observed <<
         " frames_presented=" << stats.presented <<
         " frames_dropped=" << stats.dropped <<
         " frames_cancelled=" << stats.cancelled <<
@@ -133,7 +140,14 @@ public:
                 return;
             ++statistics.submitted;
             if (pending)
+            {
                 ++statistics.dropped;
+            }
+            else
+            {
+                ++statistics.pending_frames;
+                statistics.max_pending_observed = std::max(statistics.max_pending_observed, statistics.pending_frames);
+            }
             pending = std::move(incoming);
         }
         wakeup.notify_one();
@@ -239,6 +253,7 @@ public:
                 if (pending)
                 {
                     ++statistics.cancelled;
+                    statistics.pending_frames = 0;
                     pending.reset();
                 }
             }
@@ -260,7 +275,9 @@ private:
                 if (stopping)
                     return;
                 frame = std::move(pending);
+                --statistics.pending_frames;
                 ++statistics.in_flight;
+                statistics.max_in_flight_observed = std::max(statistics.max_in_flight_observed, statistics.in_flight);
             }
 
             auto const submit_start = std::chrono::steady_clock::now();
@@ -292,6 +309,7 @@ private:
                         if (pending)
                         {
                             ++statistics.cancelled;
+                            statistics.pending_frames = 0;
                             pending.reset();
                         }
                         wakeup.notify_one();
@@ -313,6 +331,7 @@ private:
                     if (pending)
                     {
                         ++statistics.cancelled;
+                        statistics.pending_frames = 0;
                         pending.reset();
                     }
                 }
