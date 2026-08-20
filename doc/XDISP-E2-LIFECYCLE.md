@@ -14,6 +14,26 @@ the owner of Miracast connections. The `xdisp` service must be the only owner of
 GUD detection, `mirgud`, its Virtual-output lifetime, reconnect policy, and GUD
 status.
 
+## Architecture decision
+
+The current v1 production path is:
+
+Lomiri -> Mir Virtual extended output / screencast -> `mirgud` -> `LatestFramePresenter` -> GUD DRM/KMS -> USB -> Pi Zero 2 W -> HDMI monitor
+
+`xdispd` owns GUD detection, activation intent, lifecycle, child-process
+management, and recovery. It starts the managed `mirgud` client and tracks the
+owned Virtual output.
+
+The older Android2 synthetic/offscreen GUD path in
+`src/platforms/android/server/gud_output.cpp`,
+`gud_offscreen_target.h`, and `gud_synthetic_output_control.h` is dormant for
+v1. It remains in source as a historical POC and test scaffolding, but it is
+not the production path unless a future decision explicitly reactivates it.
+
+Under this architecture, E2-T01 means reconciling and proving the
+source/render/capture gate for the `xdispd`/`mirgud` path, not reviving the old
+Android2 synthetic target.
+
 ### Installed versions and source match
 
 The phone was audited on 2026-07-29 with no `mirgud` process running.
