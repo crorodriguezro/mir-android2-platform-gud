@@ -424,7 +424,8 @@ private:
 
     void commit(KmsFrame const& frame, bool modeset)
     {
-        log_commit_state(frame, modeset);
+        if (modeset)
+            log_commit_state(frame, modeset);
         auto* const request = drmModeAtomicAlloc();
         if (!request)
             throw std::runtime_error{"cannot allocate GUD atomic request"};
