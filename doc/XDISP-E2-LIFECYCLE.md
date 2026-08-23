@@ -284,6 +284,11 @@ the synchronous Mir path does not return. The child reports unavailable,
 recoverable, and unsafe transport exits separately; unsafe timeout/protocol/I/O
 errors durably enter `poisoned_transport` before stopping the child.
 
+The production activation deadline is 10 seconds. A bounded diagnostic-only
+override may be supplied explicitly as
+`XDISP_DIAGNOSTIC_ACTIVATION_TIMEOUT_SECONDS=1..45`; invalid values are ignored
+and the 10-second default is retained.
+
 The poison marker stores the affected sysfs identity. Recovery requires an
 observed removal of that identity followed by a usable add/change of the same
 identity; merely restarting the daemon, adding another DRM card, or calling

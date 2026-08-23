@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <cstring>
 #include <chrono>
+#include <cstdlib>
 #include <fstream>
 #include <memory>
 #include <spawn.h>
@@ -30,7 +31,33 @@ extern char** environ;
 
 namespace
 {
-constexpr guint activation_timeout_seconds = 45;
+constexpr guint default_activation_timeout_seconds = 10;
+constexpr guint diagnostic_activation_timeout_max_seconds = 45;
+
+guint diagnostic_activation_timeout_seconds()
+{
+    auto const* value = std::getenv("XDISP_DIAGNOSTIC_ACTIVATION_TIMEOUT_SECONDS");
+    if (!value || !*value)
+        return default_activation_timeout_seconds;
+    try
+    {
+        std::size_t parsed_length{};
+        auto const parsed = std::stoul(value, &parsed_length);
+        if (parsed_length == std::strlen(value) && parsed >= 1 &&
+            parsed <= diagnostic_activation_timeout_max_seconds)
+        {
+            g_message("xdispd: diagnostic activation timeout override=%lu seconds",
+                static_cast<unsigned long>(parsed));
+            return static_cast<guint>(parsed);
+        }
+    }
+    catch (...)
+    {
+    }
+    g_warning("xdispd: ignoring invalid XDISP_DIAGNOSTIC_ACTIVATION_TIMEOUT_SECONDS; using %u seconds",
+        default_activation_timeout_seconds);
+    return default_activation_timeout_seconds;
+}
 
 char const* const bus_name = "org.lomiri.XDisp";
 char const* const object_path = "/org/lomiri/XDisp";
@@ -732,6 +759,7 @@ private:
     guint kill_source{};
     guint status_watch{};
     guint activation_source{};
+    guint activation_timeout_seconds{diagnostic_activation_timeout_seconds()};
     GIOChannel* status_channel{};
     bool shutting_down{};
     bool stop_requested{};
