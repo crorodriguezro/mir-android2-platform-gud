@@ -392,6 +392,8 @@ struct Frame
     uint32_t height{};
     PixelFormat format{PixelFormat::rgb565};
     std::vector<uint8_t> pixels;
+    uint64_t sequence{};
+    uint64_t source_ready_ns{};
 
     unsigned bpp() const { return bytes_per_pixel(format); }
     std::size_t size() const { return static_cast<std::size_t>(width) * height * bpp(); }

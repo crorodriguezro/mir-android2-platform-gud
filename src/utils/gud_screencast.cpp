@@ -297,6 +297,13 @@ public:
             source.pixels.size() != static_cast<std::size_t>(width) * height * mirgud::bytes_per_pixel(pixel_format))
             throw std::runtime_error{"screencast frame does not match the selected GUD mode"};
         auto const update = ++update_sequence;
+        auto const present_start_ns = mirgud::monotonic_ns();
+        if (mirgud::frame_trace_enabled())
+            std::fprintf(stderr,
+                "mirgud_frame event=kms_present_start frame_seq=%llu update_seq=%llu event_ns=%llu\n",
+                static_cast<unsigned long long>(source.sequence),
+                static_cast<unsigned long long>(update),
+                static_cast<unsigned long long>(present_start_ns));
         if (!managed_mode)
             std::cerr << "mirgud: V0.1 update " << update << " begin" << std::endl;
         auto& frame = frames[next];
@@ -311,11 +318,28 @@ public:
         try
         {
             commit(frame, false);
+            auto const present_end_ns = mirgud::monotonic_ns();
+            if (mirgud::frame_trace_enabled())
+                std::fprintf(stderr,
+                    "mirgud_frame event=kms_present_end frame_seq=%llu update_seq=%llu event_ns=%llu duration_ns=%llu result=ok\n",
+                    static_cast<unsigned long long>(source.sequence),
+                    static_cast<unsigned long long>(update),
+                    static_cast<unsigned long long>(present_end_ns),
+                    static_cast<unsigned long long>(present_end_ns - present_start_ns));
             if (!managed_mode)
                 std::cerr << "mirgud: V0.1 update " << update << " complete" << std::endl;
         }
         catch (std::system_error const& error)
         {
+            auto const present_end_ns = mirgud::monotonic_ns();
+            if (mirgud::frame_trace_enabled())
+                std::fprintf(stderr,
+                    "mirgud_frame event=kms_present_end frame_seq=%llu update_seq=%llu event_ns=%llu duration_ns=%llu result=failed errno=%d\n",
+                    static_cast<unsigned long long>(source.sequence),
+                    static_cast<unsigned long long>(update),
+                    static_cast<unsigned long long>(present_end_ns),
+                    static_cast<unsigned long long>(present_end_ns - present_start_ns),
+                    error.code().value());
             std::cerr << "mirgud: V0.1 update " << update << " failed errno=" << error.code().value() <<
                 " (" << error.code().message() << ")" << std::endl;
             throw;
@@ -1536,6 +1560,14 @@ try
                     timings.release_us, timings.capture_cycle_us);
                 presenter.add_x_byte_samples(x_bytes);
                 ++frame_number;
+                frame.sequence = frame_number;
+                frame.source_ready_ns = mirgud::monotonic_ns();
+                if (mirgud::frame_trace_enabled())
+                    std::fprintf(stderr,
+                        "mirgud_frame event=source_ready frame_seq=%llu event_ns=%llu capture_cycle_us=%llu\n",
+                        static_cast<unsigned long long>(frame.sequence),
+                        static_cast<unsigned long long>(frame.source_ready_ns),
+                        static_cast<unsigned long long>(timings.capture_cycle_us));
                 try
                 {
                     dump_completed_frame(frame, frame_number);
@@ -1618,6 +1650,14 @@ try
                 presenter.received(timings.acquire_us, timings.conversion_us,
                     timings.release_us, timings.capture_cycle_us);
                 ++frame_number;
+                frame.sequence = frame_number;
+                frame.source_ready_ns = mirgud::monotonic_ns();
+                if (mirgud::frame_trace_enabled())
+                    std::fprintf(stderr,
+                        "mirgud_frame event=source_ready frame_seq=%llu event_ns=%llu capture_cycle_us=%llu\n",
+                        static_cast<unsigned long long>(frame.sequence),
+                        static_cast<unsigned long long>(frame.source_ready_ns),
+                        static_cast<unsigned long long>(timings.capture_cycle_us));
                 try
                 {
                     dump_completed_frame(frame, frame_number);

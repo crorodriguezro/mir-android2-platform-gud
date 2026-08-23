@@ -30,6 +30,8 @@ extern char** environ;
 
 namespace
 {
+constexpr guint activation_timeout_seconds = 45;
+
 char const* const bus_name = "org.lomiri.XDisp";
 char const* const object_path = "/org/lomiri/XDisp";
 char const* const interface_name = "org.lomiri.XDisp1";
@@ -610,7 +612,7 @@ private:
         status_watch = g_io_add_watch(status_channel, static_cast<GIOCondition>(G_IO_IN | G_IO_HUP | G_IO_ERR),
             &Daemon::child_status, this);
         child_watch = g_child_watch_add(child_pid, &Daemon::child_exit, this);
-        activation_source = g_timeout_add_seconds(10, [](gpointer data) -> gboolean {
+        activation_source = g_timeout_add_seconds(activation_timeout_seconds, [](gpointer data) -> gboolean {
             auto& self = *static_cast<Daemon*>(data);
             self.activation_source = 0;
             self.lifecycle.connecting_timed_out();
