@@ -5,7 +5,8 @@ Status: **verified for the deployed OnePlus 6 stack**
 This document records the pixel-format capability decision that controls how
 `mirgud` should obtain frames. It is deployment-specific: it describes the
 Mir/Android2 stack installed on the OnePlus 6, not generic or current upstream
-Mir behavior.
+Mir behavior. It is part of the **E2 COMPLETE FOR V1** closure; the selected
+transport remains a candidate rather than an installed final release default.
 
 The canonical raw and derived proof is retained in
 [`gud-gadget/evidence/xdisp-mir-format-capability-20260824T003458Z/`](../../gud-gadget/evidence/xdisp-mir-format-capability-20260824T003458Z/).
@@ -90,10 +91,11 @@ fallback without a compression dependency. The managed qualification observed
 zero ambiguous accepted I/O, poisoned transitions, timeouts, and ownership
 ambiguity.
 
-Direct Mir RGB565 + LZ4 is the selected **E2 v1 transport candidate for
-sustained qualification**, not the final production default. E2-T04 is
-unpaused and is the next gate; E5-T03 remains responsible for final
-apples-to-apples release-default and image-quality qualification.
+Direct Mir RGB565 + LZ4 is the selected **E2 v1 transport candidate** and
+passed E2 sustained qualification. The 30-minute T04 soak completed at
+24.474 FPS with no observed resource leak or transport-safety failure. It is
+not the installed final production default; E5-T03 remains responsible for
+the final apples-to-apples release-default and image-quality qualification.
 
 No intermediate XRGB8888-to-RGB565 conversion is required. The deployed Mir
 screencast path accepted RGB565 and returned CPU-mappable 2-byte pixels; the
@@ -148,12 +150,15 @@ Canonical evidence bundles:
 - [full-frame RAW qualification](../../gud-gadget/evidence/xdisp-e1-fullframe-managed-scaling-20260823T223143Z/)
 - [large-frame LZ4 qualification](../../gud-gadget/evidence/xdisp-e2-bandwidth-damage-20260823T232018Z/)
 - [direct Mir RGB565 qualification](../../gud-gadget/evidence/xdisp-e2-direct-mir-rgb565-20260824T010040Z/)
+- [E2-T04 completed 30-minute soak](../../gud-gadget/evidence/xdisp-e2-t04-rgb565-lz4-soak-20260824T033632Z/)
+- [E2-T05 shutdown/containment evidence](../../gud-gadget/evidence/xdisp-e2-t05-shutdown-containment-20260824T133342Z/)
+- [E2-T05 B/C/E completion evidence](../../gud-gadget/evidence/xdisp-e2-t05-bce-completion-20260824T135743Z/)
 
 ## Scope and follow-up
 
-- This audit and the transport qualification select the E2 v1 candidate but do
-  not select the final release default; sustained resource qualification and
-  final image-quality/release comparison remain roadmap gates.
+- This audit and the transport qualification select the E2 v1 candidate; the
+  final release default and final image-quality/release comparison remain
+  E5-T03 roadmap gates.
 - Do not add XRGB8888-to-RGB565 conversion unless new evidence shows that
   direct RGB565 delivery is unusable.
 - The audit did not instrument whether Mir internally renders or converts into
