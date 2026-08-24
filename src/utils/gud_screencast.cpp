@@ -20,6 +20,7 @@
 #include <GLES2/gl2.h>
 #include <GLES2/gl2ext.h>
 #include <boost/program_options.hpp>
+#include <cerrno>
 #include <drm/drm.h>
 #include <drm/drm_fourcc.h>
 #include <drm/drm_mode.h>
@@ -106,6 +107,30 @@ void t05_safe_stall_before_atomic_commit(bool after_first_frame)
     // has been admitted and receiver ownership remains Idle/nonowned.
     for (;;)
         std::this_thread::sleep_for(std::chrono::seconds{1});
+}
+
+bool t05_prebulk_fail_enabled()
+{
+    static bool const enabled = []
+    {
+        auto const* const value = std::getenv("MIRGUD_T05_PREBULK_FAIL");
+        return value && value[0] == '1' && value[1] == '\0';
+    }();
+    return enabled;
+}
+
+bool t05_prebulk_fail_used{};
+
+void t05_prebulk_fail_before_atomic_commit(bool after_first_frame)
+{
+    if (!after_first_frame || !t05_prebulk_fail_enabled() || t05_prebulk_fail_used)
+        return;
+
+    t05_prebulk_fail_used = true;
+    managed_status("T05_PREBULK_FAIL_TRIGGERED");
+    // This is deliberately before drmModeAtomicCommit: no GUD SET_BUFFER or
+    // bulk request is admitted, so receiver ownership remains unambiguous.
+    throw std::system_error{EIO, std::system_category(), "T05 pre-bulk failure injection"};
 }
 
 bool keep_running()
@@ -340,6 +365,7 @@ public:
         try
         {
             t05_safe_stall_before_atomic_commit(update > 1);
+            t05_prebulk_fail_before_atomic_commit(update > 1);
             commit(frame, false);
             auto const present_end_ns = mirgud::monotonic_ns();
             if (mirgud::frame_trace_enabled())
@@ -1190,6 +1216,8 @@ try
 
     managed_mode = managed;
     managed_status_fd = status_fd;
+    if (managed_mode && t05_prebulk_fail_enabled())
+        managed_status("T05_PREBULK_FAIL_ARMED");
     if (managed_mode)
         prctl(PR_SET_PDEATHSIG, SIGTERM);
     running = true;
