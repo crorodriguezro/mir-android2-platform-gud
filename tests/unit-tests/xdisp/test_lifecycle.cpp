@@ -72,7 +72,7 @@ TEST(XdispLifecycle, contained_forced_stop_returns_to_available)
     EXPECT_EQ(xdisp::State::available, h.lifecycle.state());
 }
 
-TEST(XdispLifecycle, detach_retains_intent_and_reconnects_only_after_fresh_add)
+TEST(XdispLifecycle, detach_requires_explicit_reactivation_after_fresh_add)
 {
     Harness h{true};
     h.lifecycle.sink_added();
@@ -83,8 +83,34 @@ TEST(XdispLifecycle, detach_retains_intent_and_reconnects_only_after_fresh_add)
     EXPECT_EQ(xdisp::State::unavailable, h.lifecycle.state());
     EXPECT_EQ(1, h.starts);
     h.lifecycle.sink_added();
+    EXPECT_EQ(1, h.starts);
+    EXPECT_FALSE(h.lifecycle.activation_requested());
+    EXPECT_EQ(xdisp::State::available, h.lifecycle.state());
+    EXPECT_TRUE(h.lifecycle.activate());
     EXPECT_EQ(2, h.starts);
     EXPECT_EQ(xdisp::State::connecting, h.lifecycle.state());
+}
+
+TEST(XdispLifecycle, readd_during_containment_becomes_available_after_old_child_reaped)
+{
+    Harness h{true};
+    h.lifecycle.sink_added();
+    h.lifecycle.activate();
+    h.lifecycle.child_active();
+
+    h.lifecycle.sink_removed();
+    EXPECT_EQ(xdisp::State::disconnecting, h.lifecycle.state());
+    h.lifecycle.sink_added();
+    EXPECT_EQ(1, h.starts);
+    EXPECT_EQ(xdisp::State::disconnecting, h.lifecycle.state());
+
+    h.lifecycle.child_exited(xdisp::ChildResult::stopped, "detached");
+    EXPECT_EQ(xdisp::State::available, h.lifecycle.state());
+    EXPECT_EQ(1, h.starts);
+    EXPECT_FALSE(h.lifecycle.activation_requested());
+
+    EXPECT_TRUE(h.lifecycle.activate());
+    EXPECT_EQ(2, h.starts);
 }
 
 TEST(XdispLifecycle, recoverable_error_requires_explicit_retry)

@@ -137,6 +137,10 @@ void Lifecycle::sink_added()
 void Lifecycle::sink_removed()
 {
     present = false;
+    // A physical removal ends the current activation request.  Reappearance
+    // publishes availability only; the operator must explicitly Activate a
+    // fresh mirgud child after reconnect.
+    active_intent = false;
     if (current == State::poisoned_transport)
     {
         saw_poisoned_remove = true;
@@ -204,7 +208,11 @@ void Lifecycle::child_exited(ChildResult result, std::string const& reason)
     }
     if (current == State::disconnecting && result == ChildResult::stopped)
     {
-        transition(disconnect_target, reason);
+        // The sink may have reappeared while bounded containment was still
+        // reaping the old child.  Publish the current availability after the
+        // old child is gone; activation remains explicit because removal
+        // cleared active_intent above.
+        transition(enabled_intent && present ? State::available : disconnect_target, reason);
         return;
     }
     if (result == ChildResult::unavailable)
