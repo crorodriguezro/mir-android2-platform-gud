@@ -54,7 +54,8 @@ docker run --rm \
     --volume "$build_dir:/build" \
     --workdir /build \
     "$image_tag" \
-    /build/bin/mir_unit_tests_android2.bin --gtest_filter='GudPresentationWorker.*:GudHwcBoundary.*'
+    /build/bin/mir_unit_tests_android2.bin \
+        --gtest_filter='GudPresentationWorker.*:GudHwcBoundary.*:GudModeSelection.*:GudModeContract.*'
 
 docker run --rm \
     --network none \

@@ -1,0 +1,2 @@
+INFO Recorded committed wire-visible GUD mode contract event="e4_mode_contract_gud_commit" mode_contract_id="e4c1-2c5242af7c0e3ebe" generation=1 connector=0 format=64 clock_khz=74250 hdisplay=1280 hsync_start=1390 hsync_end=1430 htotal=1650 vdisplay=720 vsync_start=725 vsync_end=730 vtotal=750 flags=5
+INFO Committed generation-bound dynamic presentation route event="mode_commit_decision" mode_contract_id="e4c1-2c5242af7c0e3ebe" generation=1 new_physical=ModeKey active_size=(1280,720) active_pitch=2560

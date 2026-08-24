@@ -9,6 +9,7 @@
  * Transport format is selectable via --pixel-format (rgb565 or xrgb8888).
  */
 #include "gud_screencast_format.h"
+#include "gud_mode_contract.h"
 #include "gud_screencast_presenter.h"
 
 #include "mir_toolkit/mir_client_library.h"
@@ -312,6 +313,13 @@ public:
         setup_complete = true;
     }
 
+    uint64_t mode_contract_id() const
+    {
+        if (!setup_complete)
+            throw std::logic_error{"GUD mode contract requested before KMS setup"};
+        return contract_id;
+    }
+
     void initial_modeset()
     {
         if (!setup_complete)
@@ -471,6 +479,34 @@ private:
             throw system_error("cannot create GUD mode blob");
         width = required_width;
         height = required_height;
+        mirgud::ModeContractTiming const contract_timing{
+            mode.clock,
+            mode.hdisplay,
+            mode.hsync_start,
+            mode.hsync_end,
+            mode.htotal,
+            mode.vdisplay,
+            mode.vsync_start,
+            mode.vsync_end,
+            mode.vtotal,
+            mode.flags};
+        uint8_t const protocol_format = pixel_format == mirgud::PixelFormat::rgb565 ? 0x40 : 0x80;
+        contract_id = mirgud::mode_contract_id(contract_timing, protocol_format, 0);
+        std::cerr << "xdisp_mode_contract event=host_mode_selected"
+            << " mode_contract_id=" << mirgud::mode_contract_id_string(contract_id)
+            << " connector=0"
+            << " format=0x" << std::hex << static_cast<unsigned>(protocol_format) << std::dec
+            << " clock_khz=" << mode.clock
+            << " hdisplay=" << mode.hdisplay
+            << " hsync_start=" << mode.hsync_start
+            << " hsync_end=" << mode.hsync_end
+            << " htotal=" << mode.htotal
+            << " vdisplay=" << mode.vdisplay
+            << " vsync_start=" << mode.vsync_start
+            << " vsync_end=" << mode.vsync_end
+            << " vtotal=" << mode.vtotal
+            << " flags=0x" << std::hex << (mode.flags & mirgud::gud_mode_flag_user_mask) << std::dec
+            << std::endl;
         std::cerr << "mirgud: GUD enabled at " << width << "x" << height << " " <<
             mirgud::format_name(pixel_format) << std::endl;
     }
@@ -597,6 +633,7 @@ private:
     int fd{-1};
     uint32_t connector{}, crtc{}, plane{}, mode_blob{}, width{}, height{}, next{};
     uint64_t update_sequence{};
+    uint64_t contract_id{};
     bool setup_complete{};
     bool initial_modeset_complete{};
     drmModeModeInfo mode{};
@@ -756,7 +793,8 @@ uint64_t elapsed_us(std::chrono::steady_clock::time_point start,
 class DirectCapture
 {
 public:
-    DirectCapture(MirBufferStream* stream, mirgud::PixelFormat pixel_format, mirgud::RowOrder row_order) :
+    DirectCapture(MirBufferStream* stream, mirgud::PixelFormat pixel_format,
+                  mirgud::RowOrder row_order, uint64_t contract_id) :
         stream{stream}, pixel_format{pixel_format}, row_order{row_order}
     {
         auto const region = graphics_region(stream);
@@ -774,6 +812,19 @@ public:
             " row_order=" << (row_order == mirgud::RowOrder::top_down ? "top-down" : "bottom-up") <<
             " transport=" << mirgud::format_name(pixel_format) <<
             " conversion_path=" << source_format.conversion_path_name() << std::endl;
+        if (contract_id)
+            std::cerr << "xdisp_mode_contract event=mir_source_ready"
+                << " mode_contract_id=" << mirgud::mode_contract_id_string(contract_id)
+                << " logical_width=" << source_format.width
+                << " logical_height=" << source_format.height
+                << " source_width=" << source_format.width
+                << " source_height=" << source_format.height
+                << " source_stride=" << source_format.stride
+                << " mir_format=" << static_cast<int>(source_format.pixel_format)
+                << " row_order=" << (row_order == mirgud::RowOrder::top_down ? "top-down" : "bottom-up")
+                << " transport_format=" << mirgud::format_name(pixel_format)
+                << " conversion_path=" << source_format.conversion_path_name()
+                << std::endl;
     }
 
     mirgud::SourceFormat const& source_format_info() const { return source_format; }
@@ -863,7 +914,8 @@ class EglCapture
 {
 public:
     EglCapture(MirConnection* connection, MirBufferStream* stream, uint32_t width, uint32_t height,
-               mirgud::PixelFormat pixel_format) : width{width}, height{height}, pixel_format{pixel_format}
+               mirgud::PixelFormat pixel_format, uint64_t contract_id) :
+        width{width}, height{height}, pixel_format{pixel_format}
     {
         static EGLint const attributes[] = {EGL_SURFACE_TYPE, EGL_WINDOW_BIT, EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8,
             EGL_BLUE_SIZE, 8, EGL_ALPHA_SIZE, 8, EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT, EGL_NONE};
@@ -889,6 +941,20 @@ public:
         bytes.resize(static_cast<std::size_t>(width) * height * 4);
         std::cerr << "mirgud: virtual frame source uses EGL readback fallback " << width << "x" << height <<
             " transport=" << mirgud::format_name(pixel_format) << std::endl;
+        if (contract_id)
+            std::cerr << "xdisp_mode_contract event=mir_source_ready"
+                << " mode_contract_id=" << mirgud::mode_contract_id_string(contract_id)
+                << " logical_width=" << width
+                << " logical_height=" << height
+                << " source_width=" << width
+                << " source_height=" << height
+                << " source_stride=" << width * 4
+                << " mir_format=" << static_cast<int>(mir_source_format())
+                << " row_order=bottom-up"
+                << " transport_format=" << mirgud::format_name(pixel_format)
+                << " conversion_path=" << mirgud::conversion_path_name(
+                    mirgud::conversion_path_for(pixel_format, mir_source_format()))
+                << std::endl;
     }
 
     ~EglCapture()
@@ -1253,12 +1319,14 @@ try
         return EXIT_SUCCESS;
     }
     std::unique_ptr<GudKms> kms;
+    uint64_t mode_contract{};
     if (no_gud)
         std::cerr << "mirgud: GUD disabled for source-only stability probe" << std::endl;
     else
     {
         kms = std::make_unique<GudKms>(width, height, pixel_format, gud_fd, gud_connector);
         kms->setup();
+        mode_contract = kms->mode_contract_id();
         managed_status("MODESET_BEGIN");
         kms->initial_modeset();
         managed_status("MODESET_COMPLETE");
@@ -1572,7 +1640,8 @@ try
     try
     {
         direct = std::make_unique<DirectCapture>(stream, pixel_format,
-            source_mode == "extend" ? mirgud::RowOrder::top_down : mirgud::RowOrder::bottom_up);
+            source_mode == "extend" ? mirgud::RowOrder::top_down : mirgud::RowOrder::bottom_up,
+            mode_contract);
         presenter.set_conversion_path(direct->source_format_info().conversion_path);
         report_identity.source_mir_format = direct->source_format_info().pixel_format;
         report_identity.conversion_path = direct->source_format_info().conversion_path;
@@ -1671,7 +1740,7 @@ try
     }
     else
     {
-        EglCapture capture{connection.get(), stream, width, height, pixel_format};
+        EglCapture capture{connection.get(), stream, width, height, pixel_format, mode_contract};
         presenter.set_conversion_path(mirgud::conversion_path_for(pixel_format, capture.mir_source_format()));
         report_identity.source_mir_format = capture.mir_source_format();
         report_identity.conversion_path = mirgud::conversion_path_for(pixel_format, capture.mir_source_format());

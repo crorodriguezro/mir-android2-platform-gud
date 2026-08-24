@@ -4,6 +4,7 @@
 #include "src/platforms/android/server/gud_render_only_control.h"
 #include "src/platforms/android/server/gud_offscreen_target.h"
 #include "src/platforms/android/server/gud_synthetic_output_control.h"
+#include "src/utils/gud_mode_contract.h"
 
 #include <gtest/gtest.h>
 
@@ -92,6 +93,20 @@ TEST(GudModeSelection, uses_the_first_usable_mode_without_a_preference)
 
     ASSERT_NE(nullptr, selected);
     EXPECT_EQ(1u, selected->index);
+}
+
+TEST(GudModeContract, has_a_stable_cross_process_identity)
+{
+    mirgud::ModeContractTiming const timing{
+        74250, 1280, 1390, 1430, 1650, 720, 725, 730, 750, 0x00000005};
+
+    auto const id = mirgud::mode_contract_id(timing, 0x40, 0);
+
+    EXPECT_EQ("e4c1-2c5242af7c0e3ebe", mirgud::mode_contract_id_string(id));
+    EXPECT_NE(id, mirgud::mode_contract_id(timing, 0x80, 0));
+    auto different_timing = timing;
+    ++different_timing.htotal;
+    EXPECT_NE(id, mirgud::mode_contract_id(different_timing, 0x40, 0));
 }
 
 TEST(GudPresentationWorker, coalesces_pending_frames_to_the_newest)
