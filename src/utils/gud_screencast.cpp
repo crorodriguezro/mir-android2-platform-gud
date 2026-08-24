@@ -86,6 +86,28 @@ void stop(int)
     stop_signal_received = 1;
 }
 
+bool t05_safe_stall_enabled()
+{
+    static bool const enabled = []
+    {
+        auto const* const value = std::getenv("MIRGUD_T05_SAFE_STALL");
+        return value && value[0] == '1' && value[1] == '\0';
+    }();
+    return enabled;
+}
+
+void t05_safe_stall_before_atomic_commit(bool after_first_frame)
+{
+    if (!after_first_frame || !t05_safe_stall_enabled())
+        return;
+
+    managed_status("T05_SAFE_STALL_ENTER");
+    // This hook is deliberately before drmModeAtomicCommit, so no GUD request
+    // has been admitted and receiver ownership remains Idle/nonowned.
+    for (;;)
+        std::this_thread::sleep_for(std::chrono::seconds{1});
+}
+
 bool keep_running()
 {
     return running && !stop_signal_received;
@@ -317,6 +339,7 @@ public:
         }
         try
         {
+            t05_safe_stall_before_atomic_commit(update > 1);
             commit(frame, false);
             auto const present_end_ns = mirgud::monotonic_ns();
             if (mirgud::frame_trace_enabled())
