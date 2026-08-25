@@ -1,0 +1,14 @@
+[Unit]
+Description=Recover the Qualcomm USB host controller after GUD removal
+After=systemd-udev-settle.service usb-moded.service xdisp.service
+Wants=systemd-udev-settle.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/libexec/lomiri-xdisp/gud-usb-role-recovery.py
+Restart=on-failure
+RestartSec=5s
+User=root
+
+[Install]
+WantedBy=graphical.target

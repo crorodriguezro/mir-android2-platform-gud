@@ -15,5 +15,10 @@ target_link_libraries(xdispd
 
 install(TARGETS xdispd RUNTIME DESTINATION libexec/lomiri-xdisp)
 install(FILES ${PROJECT_SOURCE_DIR}/data/xdisp.service DESTINATION lib/systemd/system)
+install(PROGRAMS
+  ${PROJECT_SOURCE_DIR}/src/xdisp/gud-usb-role-recovery.py
+  ${PROJECT_SOURCE_DIR}/src/xdisp/usb_role_recovery_policy.py
+  DESTINATION libexec/lomiri-xdisp)
+install(FILES ${PROJECT_SOURCE_DIR}/data/gud-usb-role-recovery.service DESTINATION lib/systemd/system)
 install(FILES ${PROJECT_SOURCE_DIR}/data/org.lomiri.XDisp.service DESTINATION ${CMAKE_INSTALL_DATADIR}/dbus-1/system-services)
 install(FILES ${PROJECT_SOURCE_DIR}/data/org.lomiri.XDisp.conf DESTINATION /etc/dbus-1/system.d)
