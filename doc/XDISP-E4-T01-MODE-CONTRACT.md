@@ -45,7 +45,12 @@ both the C++ and Rust suites assert it independently.
 
 ## Qualification status
 
-The instrumentation, cross-language identity, verifier, and offline tests are
-complete. E4-T01 hardware acceptance remains pending until one connected
-activation captures matching phone and Pi records. This does not bypass the
-blocked E3 physical reconnect gate and does not qualify E4-T02 or E4-T05.
+**E4-T01 PASS.** On 2026-08-25 one connected activation produced matching phone
+and Pi records for `mode_contract_id=e4c1-2c5242af7c0e3ebe`; the verifier passed,
+live RGB565+LZ4 frames completed without receiver failures, and the operator
+confirmed the external desktop was visibly correct. Evidence is in
+`evidence/xdisp-e4-t01-mode-contract-20260825T052302Z/`.
+
+This result does not override E3-B01's strict reconnect failure: the independent
+OnePlus host-controller issue required the documented role cycle before this E4
+session. E4-T01 does not by itself qualify E4-T02 or E4-T05.

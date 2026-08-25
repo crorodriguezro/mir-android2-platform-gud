@@ -1,0 +1,2 @@
+xdisp_mode_contract event=host_mode_selected mode_contract_id=e4c1-2c5242af7c0e3ebe connector=0 format=0x40 clock_khz=74250 hdisplay=1280 hsync_start=1390 hsync_end=1430 htotal=1650 vdisplay=720 vsync_start=725 vsync_end=730 vtotal=750 flags=0x5
+xdisp_mode_contract event=mir_source_ready mode_contract_id=e4c1-2c5242af7c0e3ebe logical_width=1280 logical_height=720 source_width=1280 source_height=720 source_stride=2560 mir_format=7 row_order=top-down transport_format=rgb565 conversion_path=direct-copy
