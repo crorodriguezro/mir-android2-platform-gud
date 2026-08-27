@@ -20,6 +20,21 @@ target_link_libraries(mirgud
 install(PROGRAMS ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/mirgud.bin
   DESTINATION libexec/lomiri-xdisp
   RENAME mirgud)
+
+# Hardware POC utility. It intentionally has no build-time Mir dependency: the
+# target's legacy client ABI is resolved from libmirclient.so.9 at runtime.
+add_executable(mir-venus-h264 src/utils/mir_venus_h264.c)
+target_link_libraries(mir-venus-h264 ${CMAKE_DL_LIBS})
+
+# Receiver-side POC shim for distro FFmpeg builds that request a compressed
+# V4L2 H.264 buffer smaller than a Venus keyframe.  This changes only H.264
+# VIDEO_OUTPUT_MPLANE sizeimage during VIDIOC_S_FMT.
+add_library(v4l2-h264-sizeimage-preload SHARED
+  src/utils/v4l2_h264_sizeimage_preload.c)
+target_link_libraries(v4l2-h264-sizeimage-preload ${CMAKE_DL_LIBS})
+set_target_properties(v4l2-h264-sizeimage-preload PROPERTIES
+  PREFIX ""
+  OUTPUT_NAME "v4l2-h264-sizeimage-preload")
 add_subdirectory(xdisp)
 
 add_definitions(-DMIRCORE_LIBDIR="${MIRCORE_LIBDIR}")

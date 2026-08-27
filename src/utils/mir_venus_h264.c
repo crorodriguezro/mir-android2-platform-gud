@@ -1,0 +1,659 @@
+/*
+ * Minimal Mir screencast -> Qualcomm Venus H.264 proof of concept.
+ *
+ * This deliberately resolves the legacy Mir client ABI at runtime.  The
+ * target image contains libmirclient.so.9 but not its development headers;
+ * keeping the small ABI boundary here makes the hardware experiment
+ * reproducible without rebuilding the complete Ubuntu Touch platform.
+ */
+#include <dlfcn.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <linux/videodev2.h>
+#include <poll.h>
+#include <signal.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/ioctl.h>
+#include <sys/mman.h>
+#include <time.h>
+#include <unistd.h>
+
+#define NBUF 4
+#define NPLANE VIDEO_MAX_PLANES
+
+/* Qualcomm's downstream msm_vidc ABI predates the standard equivalents. */
+#define V4L2_CID_MPEG_MSM_VIDC_BASE (V4L2_CTRL_CLASS_MPEG | 0x2000)
+#define V4L2_CID_MPEG_VIDC_VIDEO_NUM_B_FRAMES \
+	(V4L2_CID_MPEG_MSM_VIDC_BASE + 7)
+
+typedef struct MirConnection MirConnection;
+typedef struct MirScreencastSpec MirScreencastSpec;
+typedef struct MirScreencast MirScreencast;
+typedef struct MirBufferStream MirBufferStream;
+
+typedef struct {
+	int left;
+	int top;
+	unsigned int width;
+	unsigned int height;
+} MirRectangle;
+
+typedef struct {
+	int width;
+	int height;
+	int stride;
+	int pixel_format;
+	void *vaddr;
+} MirGraphicsRegion;
+
+struct mir_api {
+	void *library;
+	MirConnection *(*connect_sync)(char const *, char const *);
+	int (*connection_is_valid)(MirConnection *);
+	char const *(*connection_get_error_message)(MirConnection *);
+	void (*connection_release)(MirConnection *);
+	MirScreencastSpec *(*create_screencast_spec)(MirConnection *);
+	void (*spec_set_width)(MirScreencastSpec *, unsigned int);
+	void (*spec_set_height)(MirScreencastSpec *, unsigned int);
+	void (*spec_set_pixel_format)(MirScreencastSpec *, int);
+	void (*spec_set_capture_region)(MirScreencastSpec *, MirRectangle const *);
+	void (*spec_set_number_of_buffers)(MirScreencastSpec *, unsigned int);
+	MirScreencast *(*screencast_create_sync)(MirScreencastSpec *);
+	void (*screencast_spec_release)(MirScreencastSpec *);
+	MirBufferStream *(*screencast_get_buffer_stream)(MirScreencast *);
+	void (*screencast_release_sync)(MirScreencast *);
+	void (*buffer_stream_get_graphics_region)(MirBufferStream *, MirGraphicsRegion *);
+	void (*buffer_stream_swap_buffers_sync)(MirBufferStream *);
+};
+
+struct mapped_buffer {
+	void *ptr[NPLANE];
+	size_t len[NPLANE];
+	int fd[NPLANE];
+	unsigned int planes;
+};
+
+struct ts_mux {
+	int enabled;
+	unsigned int fps;
+	uint8_t pat_continuity;
+	uint8_t pmt_continuity;
+	uint8_t video_continuity;
+	uint64_t access_unit;
+};
+
+typedef int ion_user_handle_t;
+struct ion_allocation_data {
+	size_t len, align;
+	unsigned int heap_id_mask, flags;
+	ion_user_handle_t handle;
+};
+struct ion_fd_data { ion_user_handle_t handle; int fd; };
+#define ION_IOC_MAGIC 'I'
+#define ION_IOC_ALLOC _IOWR(ION_IOC_MAGIC, 0, struct ion_allocation_data)
+#define ION_IOC_SHARE _IOWR(ION_IOC_MAGIC, 4, struct ion_fd_data)
+#define ION_SYSTEM_HEAP_MASK (1U << 25)
+
+static volatile sig_atomic_t stop_requested;
+
+static void stop_handler(int signal_number)
+{
+	(void)signal_number;
+	stop_requested = 1;
+}
+
+static uint64_t monotonic_ns(void)
+{
+	struct timespec value;
+	clock_gettime(CLOCK_MONOTONIC, &value);
+	return (uint64_t)value.tv_sec * 1000000000ULL + value.tv_nsec;
+}
+
+static int xioctl(int fd, unsigned long request, void *arg)
+{
+	int ret;
+	do ret = ioctl(fd, request, arg); while (ret < 0 && errno == EINTR);
+	return ret;
+}
+
+static int write_full(int fd, void const *data, size_t length)
+{
+	uint8_t const *cursor = data;
+	while (length) {
+		ssize_t written = write(fd, cursor, length);
+		if (written < 0 && errno == EINTR) continue;
+		if (written <= 0) return -1;
+		cursor += written;
+		length -= (size_t)written;
+	}
+	return 0;
+}
+
+static uint32_t mpeg_crc32(uint8_t const *data, size_t length)
+{
+	uint32_t crc = 0xffffffffU;
+	size_t index;
+	for (index = 0; index < length; ++index) {
+		unsigned int bit;
+		crc ^= (uint32_t)data[index] << 24;
+		for (bit = 0; bit < 8; ++bit)
+			crc = (crc << 1) ^ ((crc & 0x80000000U) ? 0x04c11db7U : 0);
+	}
+	return crc;
+}
+
+static int ts_write_section(int fd, uint16_t pid, uint8_t *continuity,
+			    uint8_t const *section, size_t section_length)
+{
+	uint8_t packet[188];
+	if (section_length + 5 > sizeof(packet)) return -1;
+	memset(packet, 0xff, sizeof(packet));
+	packet[0] = 0x47;
+	packet[1] = 0x40 | (uint8_t)(pid >> 8);
+	packet[2] = (uint8_t)pid;
+	packet[3] = 0x10 | (*continuity & 0x0f);
+	packet[4] = 0;
+	memcpy(packet + 5, section, section_length);
+	*continuity = (uint8_t)((*continuity + 1) & 0x0f);
+	return write_full(fd, packet, sizeof(packet));
+}
+
+static int ts_write_tables(int fd, struct ts_mux *mux)
+{
+	uint8_t pat[16] = {0x00, 0xb0, 0x0d, 0x00, 0x01, 0xc1, 0x00, 0x00,
+		0x00, 0x01, 0xf0, 0x00};
+	uint8_t pmt[21] = {0x02, 0xb0, 0x12, 0x00, 0x01, 0xc1, 0x00, 0x00,
+		0xe1, 0x00, 0xf0, 0x00, 0x1b, 0xe1, 0x00, 0xf0, 0x00};
+	uint32_t crc = mpeg_crc32(pat, 12);
+	pat[12] = (uint8_t)(crc >> 24); pat[13] = (uint8_t)(crc >> 16);
+	pat[14] = (uint8_t)(crc >> 8); pat[15] = (uint8_t)crc;
+	crc = mpeg_crc32(pmt, 17);
+	pmt[17] = (uint8_t)(crc >> 24); pmt[18] = (uint8_t)(crc >> 16);
+	pmt[19] = (uint8_t)(crc >> 8); pmt[20] = (uint8_t)crc;
+	if (ts_write_section(fd, 0x0000, &mux->pat_continuity, pat, sizeof(pat)) < 0)
+		return -1;
+	return ts_write_section(fd, 0x1000, &mux->pmt_continuity, pmt, sizeof(pmt));
+}
+
+static void encode_pts(uint8_t destination[5], uint64_t pts)
+{
+	pts &= (1ULL << 33) - 1;
+	destination[0] = 0x21 | (uint8_t)((pts >> 29) & 0x0e);
+	destination[1] = (uint8_t)(pts >> 22);
+	destination[2] = (uint8_t)(((pts >> 14) & 0xfe) | 1);
+	destination[3] = (uint8_t)(pts >> 7);
+	destination[4] = (uint8_t)(((pts << 1) & 0xfe) | 1);
+}
+
+static void encode_pcr(uint8_t destination[6], uint64_t base)
+{
+	base &= (1ULL << 33) - 1;
+	destination[0] = (uint8_t)(base >> 25);
+	destination[1] = (uint8_t)(base >> 17);
+	destination[2] = (uint8_t)(base >> 9);
+	destination[3] = (uint8_t)(base >> 1);
+	destination[4] = (uint8_t)(((base & 1) << 7) | 0x7e);
+	destination[5] = 0;
+}
+
+static int ts_write_access_unit(int fd, struct ts_mux *mux,
+				uint8_t const *access_unit, size_t access_unit_length)
+{
+	uint8_t pes_header[14] = {0x00, 0x00, 0x01, 0xe0, 0x00, 0x00,
+		0x80, 0x80, 0x05};
+	uint64_t pts = mux->access_unit * 90000ULL / mux->fps;
+	size_t total = sizeof(pes_header) + access_unit_length;
+	size_t position = 0;
+	int first = 1;
+	if (mux->access_unit % mux->fps == 0 && ts_write_tables(fd, mux) < 0)
+		return -1;
+	encode_pts(pes_header + 9, pts);
+	while (position < total) {
+		uint8_t packet[188];
+		size_t maximum_payload = first ? 176 : 184;
+		size_t remaining = total - position;
+		size_t payload = remaining < maximum_payload ? remaining : maximum_payload;
+		size_t cursor = 4;
+		int adaptation = first || payload < 184;
+		memset(packet, 0xff, sizeof(packet));
+		packet[0] = 0x47;
+		packet[1] = (first ? 0x40 : 0x00) | 0x01;
+		packet[2] = 0x00;
+		packet[3] = (adaptation ? 0x30 : 0x10) | (mux->video_continuity & 0x0f);
+		mux->video_continuity = (uint8_t)((mux->video_continuity + 1) & 0x0f);
+		if (adaptation) {
+			size_t adaptation_length = 183 - payload;
+			packet[cursor++] = (uint8_t)adaptation_length;
+			if (adaptation_length) {
+				packet[cursor++] = first ? 0x10 : 0x00;
+				if (first) {
+					encode_pcr(packet + cursor, pts);
+					cursor += 6;
+				}
+				cursor += adaptation_length - 1 - (first ? 6 : 0);
+			}
+		}
+		while (payload) {
+			size_t header_remaining = position < sizeof(pes_header) ?
+				sizeof(pes_header) - position : 0;
+			size_t chunk = header_remaining ? header_remaining : payload;
+			if (chunk > payload) chunk = payload;
+			if (header_remaining)
+				memcpy(packet + cursor, pes_header + position, chunk);
+			else
+				memcpy(packet + cursor,
+					access_unit + position - sizeof(pes_header), chunk);
+			cursor += chunk;
+			position += chunk;
+			payload -= chunk;
+		}
+		if (write_full(fd, packet, sizeof(packet)) < 0) return -1;
+		first = 0;
+	}
+	++mux->access_unit;
+	return 0;
+}
+
+static int write_access_unit(int fd, struct ts_mux *mux,
+			     void const *data, size_t length)
+{
+	if (mux->enabled)
+		return ts_write_access_unit(fd, mux, data, length);
+	++mux->access_unit;
+	return write_full(fd, data, length);
+}
+
+static int set_ctrl(int fd, uint32_t id, int value)
+{
+	struct v4l2_control control = {.id = id, .value = value};
+	if (xioctl(fd, VIDIOC_S_CTRL, &control) == 0) return 0;
+	fprintf(stderr, "control 0x%x=%d: %s (continuing)\n", id, value,
+		strerror(errno));
+	return -1;
+}
+
+static int alloc_ion(int ionfd, size_t len, struct mapped_buffer *buffer,
+		     unsigned int plane)
+{
+	struct ion_allocation_data alloc = {.len = (len + 4095) & ~4095UL,
+		.align = 4096, .heap_id_mask = ION_SYSTEM_HEAP_MASK};
+	struct ion_fd_data share;
+	if (xioctl(ionfd, ION_IOC_ALLOC, &alloc) < 0) return -1;
+	memset(&share, 0, sizeof(share));
+	share.handle = alloc.handle;
+	if (xioctl(ionfd, ION_IOC_SHARE, &share) < 0) return -1;
+	buffer->fd[plane] = share.fd;
+	buffer->len[plane] = alloc.len;
+	buffer->ptr[plane] = mmap(NULL, alloc.len, PROT_READ | PROT_WRITE,
+		MAP_SHARED, share.fd, 0);
+	return buffer->ptr[plane] == MAP_FAILED ? -1 : 0;
+}
+
+static int map_queue(int fd, int ionfd, enum v4l2_buf_type type,
+		     unsigned int num_planes, size_t const sizes[NPLANE],
+		     struct mapped_buffer buffers[NBUF])
+{
+	struct v4l2_requestbuffers request = {.count = NBUF, .type = type,
+		.memory = V4L2_MEMORY_USERPTR};
+	unsigned int i, plane;
+	if (xioctl(fd, VIDIOC_REQBUFS, &request) < 0 || request.count < 2) return -1;
+	for (i = 0; i < request.count; ++i) {
+		buffers[i].planes = num_planes;
+		for (plane = 0; plane < num_planes; ++plane)
+			if (alloc_ion(ionfd, sizes[plane], &buffers[i], plane) < 0)
+				return -1;
+	}
+	return (int)request.count;
+}
+
+static int load_mir(struct mir_api *api)
+{
+#define LOAD(field, symbol) do { \
+	*(void **)(&api->field) = dlsym(api->library, symbol); \
+	if (!api->field) { fprintf(stderr, "missing Mir symbol %s\n", symbol); return -1; } \
+} while (0)
+	memset(api, 0, sizeof(*api));
+	api->library = dlopen("libmirclient.so.9", RTLD_NOW | RTLD_LOCAL);
+	if (!api->library) {
+		fprintf(stderr, "dlopen libmirclient.so.9: %s\n", dlerror());
+		return -1;
+	}
+	LOAD(connect_sync, "mir_connect_sync");
+	LOAD(connection_is_valid, "mir_connection_is_valid");
+	LOAD(connection_get_error_message, "mir_connection_get_error_message");
+	LOAD(connection_release, "mir_connection_release");
+	LOAD(create_screencast_spec, "mir_create_screencast_spec");
+	LOAD(spec_set_width, "mir_screencast_spec_set_width");
+	LOAD(spec_set_height, "mir_screencast_spec_set_height");
+	LOAD(spec_set_pixel_format, "mir_screencast_spec_set_pixel_format");
+	LOAD(spec_set_capture_region, "mir_screencast_spec_set_capture_region");
+	LOAD(spec_set_number_of_buffers, "mir_screencast_spec_set_number_of_buffers");
+	LOAD(screencast_create_sync, "mir_screencast_create_sync");
+	LOAD(screencast_spec_release, "mir_screencast_spec_release");
+	LOAD(screencast_get_buffer_stream, "mir_screencast_get_buffer_stream");
+	LOAD(screencast_release_sync, "mir_screencast_release_sync");
+	LOAD(buffer_stream_get_graphics_region, "mir_buffer_stream_get_graphics_region");
+	LOAD(buffer_stream_swap_buffers_sync, "mir_buffer_stream_swap_buffers_sync");
+#undef LOAD
+	return 0;
+}
+
+static void prepare_planes(struct mapped_buffer *mapped,
+			   struct v4l2_plane planes[NPLANE])
+{
+	unsigned int plane;
+	memset(planes, 0, sizeof(struct v4l2_plane) * NPLANE);
+	for (plane = 0; plane < mapped->planes; ++plane) {
+		planes[plane].m.userptr = (unsigned long)mapped->ptr[plane];
+		planes[plane].reserved[0] = mapped->fd[plane];
+		planes[plane].length = mapped->len[plane];
+	}
+}
+
+static int dequeue_capture(int fd, int output_fd, enum v4l2_buf_type type,
+			   struct mapped_buffer buffers[NBUF], unsigned int planes,
+			   uint64_t *bytes, uint64_t *access_units,
+			   size_t *maximum_access_unit, struct ts_mux *mux)
+{
+	for (;;) {
+		struct v4l2_plane p[NPLANE];
+		struct v4l2_buffer buffer = {.type = type,
+			.memory = V4L2_MEMORY_USERPTR, .length = planes, .m.planes = p};
+		memset(p, 0, sizeof(p));
+		if (xioctl(fd, VIDIOC_DQBUF, &buffer) < 0) {
+			if (errno == EAGAIN) return 0;
+			perror("DQBUF capture");
+			return -1;
+		}
+		if (p[0].bytesused) {
+			if (p[0].bytesused > *maximum_access_unit)
+				*maximum_access_unit = p[0].bytesused;
+			if (write_access_unit(output_fd, mux, buffers[buffer.index].ptr[0],
+				p[0].bytesused) < 0) {
+				perror("write H264");
+				return -1;
+			}
+			*bytes += p[0].bytesused;
+			++*access_units;
+		}
+		prepare_planes(&buffers[buffer.index], p);
+		buffer.length = buffers[buffer.index].planes;
+		buffer.m.planes = p;
+		if (xioctl(fd, VIDIOC_QBUF, &buffer) < 0) {
+			perror("re-QBUF capture");
+			return -1;
+		}
+	}
+}
+
+static int dequeue_output(int fd, enum v4l2_buf_type type,
+			  struct mapped_buffer buffers[NBUF], unsigned char free_map[NBUF],
+			  unsigned int *in_flight)
+{
+	for (;;) {
+		struct v4l2_plane p[NPLANE];
+		struct v4l2_buffer buffer = {.type = type,
+			.memory = V4L2_MEMORY_USERPTR, .length = buffers[0].planes, .m.planes = p};
+		memset(p, 0, sizeof(p));
+		if (xioctl(fd, VIDIOC_DQBUF, &buffer) < 0) {
+			if (errno == EAGAIN) return 0;
+			perror("DQBUF output");
+			return -1;
+		}
+		if (buffer.index >= NBUF || free_map[buffer.index]) {
+			fprintf(stderr, "invalid output completion index=%u\n", buffer.index);
+			return -1;
+		}
+		free_map[buffer.index] = 1;
+		if (*in_flight) --*in_flight;
+	}
+}
+
+static int next_free(unsigned char const free_map[NBUF], unsigned int count)
+{
+	unsigned int index;
+	for (index = 0; index < count; ++index)
+		if (free_map[index]) return (int)index;
+	return -1;
+}
+
+int main(int argc, char **argv)
+{
+	char const *output_path = argc > 1 ? argv[1] : "/tmp/mir-venus.h264";
+	unsigned int frame_limit = argc > 2 ? (unsigned int)strtoul(argv[2], NULL, 10) : 900;
+	unsigned int width = argc > 3 ? (unsigned int)strtoul(argv[3], NULL, 10) : 1920;
+	unsigned int height = argc > 4 ? (unsigned int)strtoul(argv[4], NULL, 10) : 1080;
+	int left = argc > 5 ? (int)strtol(argv[5], NULL, 10) : 1080;
+	unsigned int target_fps = argc > 6 ? (unsigned int)strtoul(argv[6], NULL, 10) : 30;
+	char const *transport = argc > 7 ? argv[7] : "annexb";
+	unsigned int bitrate = argc > 8 ? (unsigned int)strtoul(argv[8], NULL, 10) : 15000000;
+	struct ts_mux mux = {0};
+	struct mir_api mir;
+	MirConnection *connection = NULL;
+	MirScreencastSpec *spec = NULL;
+	MirScreencast *screencast = NULL;
+	MirBufferStream *stream = NULL;
+	MirRectangle rectangle = {left, 0, width, height};
+	struct mapped_buffer output[NBUF] = {0}, capture[NBUF] = {0};
+	struct v4l2_format format = {0};
+	struct v4l2_streamparm parm = {0};
+	enum v4l2_buf_type output_type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
+	enum v4l2_buf_type capture_type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+	size_t output_sizes[NPLANE] = {0}, capture_sizes[NPLANE] = {0};
+	unsigned int output_planes, capture_planes, index, plane;
+	int encoder_fd = -1, ion_fd = -1, output_fd = -1;
+	int output_count, capture_count, result = EXIT_FAILURE;
+	unsigned char output_free[NBUF] = {0};
+	unsigned int in_flight = 0, max_in_flight = 0, submitted = 0;
+	uint64_t bytes = 0, access_units = 0, copy_ns = 0, swap_ns = 0;
+	size_t maximum_access_unit = 0;
+	uint64_t start_ns, end_ns;
+
+	if (!frame_limit || !width || !height || !target_fps || target_fps > 240 ||
+	    (strcmp(transport, "annexb") && strcmp(transport, "mpegts")) || !bitrate) {
+		fprintf(stderr, "usage: %s [output|-] [frames] [width] [height] [capture-left] [fps] [annexb|mpegts] [bitrate]\n", argv[0]);
+		return EXIT_FAILURE;
+	}
+	mux.enabled = !strcmp(transport, "mpegts");
+	mux.fps = target_fps;
+	signal(SIGINT, stop_handler);
+	signal(SIGTERM, stop_handler);
+	if (load_mir(&mir) < 0) goto done;
+	connection = mir.connect_sync("/run/mir_socket", "mir-venus-h264");
+	if (!connection || !mir.connection_is_valid(connection)) {
+		fprintf(stderr, "Mir connection failed: %s\n", connection ?
+			mir.connection_get_error_message(connection) : "null connection");
+		goto done;
+	}
+	spec = mir.create_screencast_spec(connection);
+	if (!spec) { fprintf(stderr, "cannot create Mir screencast spec\n"); goto done; }
+	mir.spec_set_width(spec, width);
+	mir.spec_set_height(spec, height);
+	mir.spec_set_pixel_format(spec, 1); /* mir_pixel_format_abgr_8888 */
+	mir.spec_set_capture_region(spec, &rectangle);
+	mir.spec_set_number_of_buffers(spec, 3);
+	screencast = mir.screencast_create_sync(spec);
+	mir.screencast_spec_release(spec);
+	spec = NULL;
+	if (!screencast) { fprintf(stderr, "cannot create Mir screencast\n"); goto done; }
+	stream = mir.screencast_get_buffer_stream(screencast);
+	if (!stream) { fprintf(stderr, "Mir screencast has no stream\n"); goto done; }
+
+	encoder_fd = open("/dev/video33", O_RDWR | O_NONBLOCK);
+	ion_fd = open("/dev/ion", O_RDWR);
+	output_fd = !strcmp(output_path, "-") ? STDOUT_FILENO :
+		open(output_path, O_CREAT | O_TRUNC | O_WRONLY, 0644);
+	if (encoder_fd < 0 || ion_fd < 0 || output_fd < 0) {
+		perror("open encoder/ion/output");
+		goto done;
+	}
+
+	format.type = capture_type;
+	format.fmt.pix_mp.width = width;
+	format.fmt.pix_mp.height = height;
+	format.fmt.pix_mp.pixelformat = V4L2_PIX_FMT_H264;
+	format.fmt.pix_mp.field = V4L2_FIELD_NONE;
+	format.fmt.pix_mp.num_planes = 1;
+	format.fmt.pix_mp.plane_fmt[0].sizeimage = 2 * 1024 * 1024;
+	if (xioctl(encoder_fd, VIDIOC_S_FMT, &format) < 0) { perror("S_FMT capture"); goto done; }
+	capture_planes = format.fmt.pix_mp.num_planes;
+	for (plane = 0; plane < capture_planes; ++plane)
+		capture_sizes[plane] = format.fmt.pix_mp.plane_fmt[plane].sizeimage;
+
+	memset(&format, 0, sizeof(format));
+	format.type = output_type;
+	format.fmt.pix_mp.width = width;
+	format.fmt.pix_mp.height = height;
+	format.fmt.pix_mp.pixelformat = V4L2_PIX_FMT_RGB32;
+	format.fmt.pix_mp.field = V4L2_FIELD_NONE;
+	if (xioctl(encoder_fd, VIDIOC_S_FMT, &format) < 0) { perror("S_FMT output"); goto done; }
+	output_planes = format.fmt.pix_mp.num_planes;
+	for (plane = 0; plane < output_planes; ++plane)
+		output_sizes[plane] = format.fmt.pix_mp.plane_fmt[plane].sizeimage;
+	fprintf(stderr, "mir_venus config=%ux%u source=Mir-ABGR8888 encoder=Venus-RGB4 output=H264 "
+		"transport=%s bitrate=%u capture_buffers=%u requested_frames=%u\n",
+		width, height, transport, bitrate, NBUF, frame_limit);
+
+	parm.type = output_type;
+	parm.parm.output.timeperframe.numerator = 1;
+	parm.parm.output.timeperframe.denominator = target_fps;
+	if (xioctl(encoder_fd, VIDIOC_S_PARM, &parm) < 0) perror("S_PARM");
+	set_ctrl(encoder_fd, V4L2_CID_MPEG_VIDC_VIDEO_NUM_B_FRAMES, 0);
+	set_ctrl(encoder_fd, V4L2_CID_MPEG_VIDEO_BITRATE, (int)bitrate);
+
+	output_count = map_queue(encoder_fd, ion_fd, output_type, output_planes, output_sizes, output);
+	capture_count = map_queue(encoder_fd, ion_fd, capture_type, capture_planes, capture_sizes, capture);
+	if (output_count < 0 || capture_count < 0) { perror("REQBUFS/map"); goto done; }
+	for (index = 0; index < (unsigned int)output_count; ++index) output_free[index] = 1;
+	for (index = 0; index < (unsigned int)capture_count; ++index) {
+		struct v4l2_plane p[NPLANE];
+		struct v4l2_buffer buffer = {.type = capture_type,
+			.memory = V4L2_MEMORY_USERPTR, .index = index,
+			.length = capture[index].planes, .m.planes = p};
+		prepare_planes(&capture[index], p);
+		if (xioctl(encoder_fd, VIDIOC_QBUF, &buffer) < 0) { perror("QBUF capture"); goto done; }
+	}
+	if (xioctl(encoder_fd, VIDIOC_STREAMON, &capture_type) < 0 ||
+	    xioctl(encoder_fd, VIDIOC_STREAMON, &output_type) < 0) {
+		perror("STREAMON");
+		goto done;
+	}
+
+	start_ns = monotonic_ns();
+	while (submitted < frame_limit && !stop_requested) {
+		int free_index;
+		if (submitted) {
+			uint64_t deadline_ns = start_ns + (uint64_t)submitted * 1000000000ULL / target_fps;
+			struct timespec deadline = {(time_t)(deadline_ns / 1000000000ULL),
+				(long)(deadline_ns % 1000000000ULL)};
+			while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &deadline, NULL) < 0 &&
+			       errno == EINTR && !stop_requested) {}
+		}
+		while ((free_index = next_free(output_free, (unsigned int)output_count)) < 0) {
+			struct pollfd poll_fd = {.fd = encoder_fd, .events = POLLIN | POLLOUT};
+			if (poll(&poll_fd, 1, 2000) <= 0) { perror("poll waiting for output"); goto done; }
+		if (dequeue_capture(encoder_fd, output_fd, capture_type, capture,
+				capture_planes, &bytes, &access_units, &maximum_access_unit,
+				&mux) < 0 ||
+			    dequeue_output(encoder_fd, output_type, output, output_free, &in_flight) < 0)
+				goto done;
+		}
+		{
+			MirGraphicsRegion region = {0};
+			struct v4l2_plane p[NPLANE];
+			struct v4l2_buffer buffer = {.type = output_type,
+				.memory = V4L2_MEMORY_USERPTR, .index = (unsigned int)free_index,
+				.length = output[free_index].planes, .m.planes = p};
+			uint64_t copy_start, swap_start;
+			unsigned int row;
+			mir.buffer_stream_get_graphics_region(stream, &region);
+			if (!region.vaddr || region.width != (int)width || region.height != (int)height ||
+			    region.stride < (int)(width * 4) || region.pixel_format != 1) {
+				fprintf(stderr, "unexpected Mir region %dx%d stride=%d format=%d ptr=%p\n",
+					region.width, region.height, region.stride, region.pixel_format, region.vaddr);
+				goto done;
+			}
+			copy_start = monotonic_ns();
+			for (row = 0; row < height; ++row)
+				memcpy((uint8_t *)output[free_index].ptr[0] + (size_t)row * width * 4,
+					(uint8_t const *)region.vaddr + (size_t)row * region.stride,
+					(size_t)width * 4);
+			copy_ns += monotonic_ns() - copy_start;
+			prepare_planes(&output[free_index], p);
+			p[0].bytesused = width * height * 4;
+			buffer.timestamp.tv_sec = submitted / target_fps;
+			buffer.timestamp.tv_usec =
+				(submitted % target_fps) * (1000000U / target_fps);
+			if (xioctl(encoder_fd, VIDIOC_QBUF, &buffer) < 0) { perror("QBUF output"); goto done; }
+			output_free[free_index] = 0;
+			++in_flight;
+			if (in_flight > max_in_flight) max_in_flight = in_flight;
+			++submitted;
+			swap_start = monotonic_ns();
+			mir.buffer_stream_swap_buffers_sync(stream);
+			swap_ns += monotonic_ns() - swap_start;
+		}
+			if (dequeue_capture(encoder_fd, output_fd, capture_type, capture,
+				capture_planes, &bytes, &access_units, &maximum_access_unit,
+				&mux) < 0 ||
+		    dequeue_output(encoder_fd, output_type, output, output_free, &in_flight) < 0)
+			goto done;
+	}
+	while (in_flight) {
+		struct pollfd poll_fd = {.fd = encoder_fd, .events = POLLIN | POLLOUT};
+		if (poll(&poll_fd, 1, 2000) <= 0) { perror("poll drain"); goto done; }
+		if (dequeue_capture(encoder_fd, output_fd, capture_type, capture,
+			capture_planes, &bytes, &access_units, &maximum_access_unit,
+			&mux) < 0 ||
+		    dequeue_output(encoder_fd, output_type, output, output_free, &in_flight) < 0)
+			goto done;
+	}
+	/* Capture completions can trail the returned input buffers briefly. */
+	for (index = 0; index < 20 && access_units < submitted; ++index) {
+		struct pollfd poll_fd = {.fd = encoder_fd, .events = POLLIN};
+		if (poll(&poll_fd, 1, 100) < 0 && errno != EINTR) { perror("poll capture drain"); goto done; }
+		if (dequeue_capture(encoder_fd, output_fd, capture_type, capture,
+			capture_planes, &bytes, &access_units, &maximum_access_unit,
+			&mux) < 0) goto done;
+	}
+	end_ns = monotonic_ns();
+	{
+		double seconds = (end_ns - start_ns) / 1000000000.0;
+		fprintf(stderr, "mir_venus result submitted=%u access_units=%llu bytes=%llu seconds=%.3f "
+			"fps=%.2f mbps=%.2f max_access_unit=%zu copy_ms_avg=%.3f "
+			"swap_ms_avg=%.3f max_in_flight=%u drained=%s\n",
+			submitted, (unsigned long long)access_units, (unsigned long long)bytes, seconds,
+			submitted / seconds, bytes * 8.0 / 1000000.0 / seconds, maximum_access_unit,
+			copy_ns / 1000000.0 / submitted, swap_ns / 1000000.0 / submitted,
+			max_in_flight, access_units == submitted ? "true" : "false");
+	}
+	result = access_units == submitted ? EXIT_SUCCESS : EXIT_FAILURE;
+
+done:
+	if (encoder_fd >= 0) {
+		xioctl(encoder_fd, VIDIOC_STREAMOFF, &output_type);
+		xioctl(encoder_fd, VIDIOC_STREAMOFF, &capture_type);
+	}
+	if (output_fd >= 0 && output_fd != STDOUT_FILENO) close(output_fd);
+	if (ion_fd >= 0) close(ion_fd);
+	if (encoder_fd >= 0) close(encoder_fd);
+	/*
+	 * The legacy client library can wait forever in screencast_release_sync()
+	 * after a root-owned CPU screencast has been consumed concurrently with
+	 * Venus.  All encoder/ION resources are already stopped above.  Let the
+	 * process boundary disconnect this short-lived POC client instead of
+	 * turning a completed run into an unbounded shutdown.
+	 */
+	if (screencast) {
+		fflush(NULL);
+		_exit(result);
+	}
+	if (screencast) mir.screencast_release_sync(screencast);
+	if (spec) mir.screencast_spec_release(spec);
+	if (connection) mir.connection_release(connection);
+	if (mir.library) dlclose(mir.library);
+	return result;
+}
