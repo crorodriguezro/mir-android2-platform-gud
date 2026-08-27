@@ -40,7 +40,8 @@ Build-Depends: cmake,
                libumockdev-dev (>= 0.6),
                umockdev (>= 0.8.7),
                libwayland-dev,
-               libdeviceinfo-dev
+               libdeviceinfo-dev,
+               libdrm-dev
 Standards-Version: 3.9.4
 Homepage: https://gitlab.com/ubports/development/core/hybris-support/mir-android2-platform
 Vcs-Git: https://gitlab.com/ubports/development/core/hybris-support/mir-android2-platform.git
@@ -57,6 +58,15 @@ Description: Display Server for Ubuntu - android platform diagnostics utility
  robust operation and a well-defined driver model.
  .
  Contains unit tests
+
+Package: lomiri-xdisp
+Architecture: arm64
+Pre-Depends: ${misc:Pre-Depends}
+Depends: ${misc:Depends},
+         ${shlibs:Depends}
+Description: Native Lomiri GUD external-display lifecycle service
+ Owns dynamic GUD discovery and the Mir Virtual/screencast to GUD
+ presentation lifecycle without Android2 server coupling.
 
 Package: mir1-platform-graphics-android2-16
 Section: libs

@@ -1,0 +1,447 @@
+#ifndef MIR_UTILS_GUD_SCREENCAST_PRESENTER_H_
+#define MIR_UTILS_GUD_SCREENCAST_PRESENTER_H_
+
+#include "gud_screencast_format.h"
+
+#include <algorithm>
+#include <chrono>
+#include <condition_variable>
+#include <cstdio>
+#include <cstdlib>
+#include <cstdint>
+#include <exception>
+#include <functional>
+#include <memory>
+#include <mutex>
+#include <sstream>
+#include <string>
+#include <thread>
+#include <utility>
+
+namespace mirgud
+{
+inline uint64_t monotonic_ns()
+{
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+inline bool frame_trace_enabled()
+{
+    static bool const enabled = []
+    {
+        auto const* const value = std::getenv("MIRGUD_FRAME_TRACE");
+        return value && value[0] == '1' && value[1] == '\0';
+    }();
+    return enabled;
+}
+
+struct Stats
+{
+    uint64_t received{};
+    uint64_t submitted{};
+    uint64_t pending_frames{};
+    uint64_t max_pending_observed{};
+    uint64_t in_flight{};
+    uint64_t max_in_flight_observed{};
+    uint64_t presented{};
+    uint64_t dropped{};
+    uint64_t cancelled{};
+    uint64_t capture_failures{};
+    uint64_t conversion_failures{};
+    uint64_t release_failures{};
+    uint64_t dump_failures{};
+    uint64_t submit_failures{};
+    uint64_t lifecycle_callback_failures{};
+    XByteSamples x_byte_samples{};
+    TimingSummary acquire_us{};
+    TimingSummary conversion_us{};
+    TimingSummary release_us{};
+    TimingSummary capture_cycle_us{};
+    TimingSummary enqueue_us{};
+    TimingSummary submit_us{};
+    TimingSummary pattern_source_generation_us{};
+    TimingSummary pattern_format_conversion_us{};
+    TimingSummary pattern_frame_total_us{};
+    uint64_t conversion_path_counts[5]{};
+};
+
+inline bool accounting_ok(Stats const& stats)
+{
+    return stats.submitted == stats.presented + stats.dropped + stats.cancelled +
+        stats.submit_failures + stats.in_flight;
+}
+
+inline uint64_t fps(uint64_t count, uint64_t elapsed_us)
+{
+    return elapsed_us ? count * 1000000ULL / elapsed_us : 0;
+}
+
+inline uint64_t counter_delta(uint64_t current, uint64_t previous)
+{
+    return current >= previous ? current - previous : 0;
+}
+
+inline double percent(uint64_t value, uint64_t total)
+{
+    return total ? static_cast<double>(value) * 100.0 / static_cast<double>(total) : 0.0;
+}
+
+inline std::string format_accounting_fields(Stats const& stats, bool final)
+{
+    std::ostringstream output;
+    output << "report_kind=" << (final ? "final" : "periodic") <<
+        " final=" << (final ? "true" : "false") <<
+        " frames_received=" << stats.received <<
+        " frames_submitted=" << stats.submitted <<
+        " pending_frames=" << stats.pending_frames <<
+        " max_pending_observed=" << stats.max_pending_observed <<
+        " frames_in_flight=" << stats.in_flight <<
+        " max_in_flight_observed=" << stats.max_in_flight_observed <<
+        " frames_presented=" << stats.presented <<
+        " frames_dropped=" << stats.dropped <<
+        " frames_cancelled=" << stats.cancelled <<
+        " drop_percent=" << percent(stats.dropped, stats.submitted) <<
+        " cancellation_percent=" << percent(stats.cancelled, stats.submitted) <<
+        " capture_failures=" << stats.capture_failures <<
+        " conversion_failures=" << stats.conversion_failures <<
+        " release_failures=" << stats.release_failures <<
+        " dump_failures=" << stats.dump_failures <<
+        " gud_submit_failures=" << stats.submit_failures <<
+        " lifecycle_callback_failures=" << stats.lifecycle_callback_failures <<
+        " x_byte_samples=" << stats.x_byte_samples.count <<
+        " x_byte_min=" << static_cast<unsigned>(stats.x_byte_samples.count ? stats.x_byte_samples.min : 0) <<
+        " x_byte_max=" << static_cast<unsigned>(stats.x_byte_samples.max) <<
+        " x_byte_constant=" << (stats.x_byte_samples.constant ? "true" : "false") <<
+        " x_byte_zero_percent=" << percent(stats.x_byte_samples.zero, stats.x_byte_samples.count) <<
+        " x_byte_ff_percent=" << percent(stats.x_byte_samples.ff, stats.x_byte_samples.count) <<
+        " accounting_ok=" << (accounting_ok(stats) ? "true" : "false");
+    return output.str();
+}
+
+class LatestFramePresenter
+{
+public:
+    explicit LatestFramePresenter(
+        std::function<void(Frame const&)> present,
+        std::function<void()> first_presented = {},
+        std::function<void()> presentation_failed = {}) :
+        present{std::move(present)}, first_presented{std::move(first_presented)},
+        presentation_failed{std::move(presentation_failed)}, worker{[this] { work(); }}
+    {
+    }
+
+    ~LatestFramePresenter()
+    {
+        stop();
+    }
+
+    LatestFramePresenter(LatestFramePresenter const&) = delete;
+    LatestFramePresenter& operator=(LatestFramePresenter const&) = delete;
+
+    void submit(Frame frame)
+    {
+        auto const enqueue_start = std::chrono::steady_clock::now();
+        auto const submit_entry_ns = monotonic_ns();
+        frame.source_ready_ns = frame.source_ready_ns ? frame.source_ready_ns : submit_entry_ns;
+        auto const frame_sequence = frame.sequence;
+        if (frame_trace_enabled())
+            std::fprintf(stderr,
+                "mirgud_frame event=submit_enter frame_seq=%llu source_ready_ns=%llu event_ns=%llu\n",
+                static_cast<unsigned long long>(frame_sequence),
+                static_cast<unsigned long long>(frame.source_ready_ns),
+                static_cast<unsigned long long>(submit_entry_ns));
+        std::unique_ptr<Frame> incoming;
+        try
+        {
+            incoming = std::make_unique<Frame>(std::move(frame));
+        }
+        catch (...)
+        {
+            std::lock_guard<std::mutex> lock{mutex};
+            ++statistics.submitted;
+            ++statistics.submit_failures;
+            statistics.enqueue_us.add(static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - enqueue_start).count()));
+            throw;
+        }
+        uint64_t replaced_sequence{};
+        bool replaced{};
+        bool accepted{};
+        uint64_t pending_count{};
+        {
+            std::lock_guard<std::mutex> lock{mutex};
+            if (stopping)
+            {
+                statistics.enqueue_us.add(static_cast<uint64_t>(
+                    std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::steady_clock::now() - enqueue_start).count()));
+                return;
+            }
+            ++statistics.submitted;
+            if (pending)
+            {
+                ++statistics.dropped;
+                replaced = true;
+                replaced_sequence = pending->sequence;
+            }
+            else
+            {
+                ++statistics.pending_frames;
+                statistics.max_pending_observed = std::max(statistics.max_pending_observed, statistics.pending_frames);
+            }
+            pending = std::move(incoming);
+            accepted = true;
+            pending_count = statistics.pending_frames;
+            statistics.enqueue_us.add(static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - enqueue_start).count()));
+        }
+        auto const submit_return_ns = monotonic_ns();
+        if (frame_trace_enabled())
+        {
+            if (replaced)
+                std::fprintf(stderr,
+                    "mirgud_frame event=dropped frame_seq=%llu replaced_by=%llu event_ns=%llu\n",
+                    static_cast<unsigned long long>(replaced_sequence),
+                    static_cast<unsigned long long>(frame_sequence),
+                    static_cast<unsigned long long>(submit_return_ns));
+            std::fprintf(stderr,
+                "mirgud_frame event=submit_return frame_seq=%llu event_ns=%llu duration_ns=%llu accepted=%s pending=%llu\n",
+                static_cast<unsigned long long>(frame_sequence),
+                static_cast<unsigned long long>(submit_return_ns),
+                static_cast<unsigned long long>(submit_return_ns - submit_entry_ns),
+                accepted ? "true" : "false",
+                static_cast<unsigned long long>(pending_count));
+        }
+        wakeup.notify_one();
+    }
+
+    void capture_failed() { increment(&Stats::capture_failures); }
+    void conversion_failed() { increment(&Stats::conversion_failures); }
+    void release_failed() { increment(&Stats::release_failures); }
+    void dump_failed() { increment(&Stats::dump_failures); }
+
+    void add_x_byte_samples(XByteSamples const& samples)
+    {
+        std::lock_guard<std::mutex> lock{mutex};
+        if (!samples.count)
+            return;
+        if (!statistics.x_byte_samples.count)
+            statistics.x_byte_samples = samples;
+        else
+        {
+            auto& destination = statistics.x_byte_samples;
+            destination.constant = destination.constant && samples.constant &&
+                destination.first == samples.first;
+            destination.count += samples.count;
+            destination.min = std::min(destination.min, samples.min);
+            destination.max = std::max(destination.max, samples.max);
+            destination.zero += samples.zero;
+            destination.ff += samples.ff;
+        }
+    }
+
+    void received(uint64_t acquire_us, uint64_t conversion_us, uint64_t release_us,
+                  uint64_t capture_cycle_us)
+    {
+        std::lock_guard<std::mutex> lock{mutex};
+        ++statistics.received;
+        statistics.acquire_us.add(acquire_us);
+        statistics.conversion_us.add(conversion_us);
+        statistics.release_us.add(release_us);
+        statistics.capture_cycle_us.add(capture_cycle_us);
+        ++statistics.conversion_path_counts[static_cast<unsigned>(conversion_path)];
+    }
+
+    void add_pattern_timings(uint64_t source_generation_us, uint64_t format_conversion_us,
+                             uint64_t frame_total_us)
+    {
+        std::lock_guard<std::mutex> lock{mutex};
+        statistics.pattern_source_generation_us.add(source_generation_us);
+        statistics.pattern_format_conversion_us.add(format_conversion_us);
+        statistics.pattern_frame_total_us.add(frame_total_us);
+    }
+
+    void record_conversion_path(ConversionPath path)
+    {
+        std::lock_guard<std::mutex> lock{mutex};
+        ++statistics.conversion_path_counts[static_cast<unsigned>(path)];
+    }
+
+    void increment(uint64_t Stats::*member)
+    {
+        std::lock_guard<std::mutex> lock{mutex};
+        ++(statistics.*member);
+    }
+
+    Stats stats() const
+    {
+        std::lock_guard<std::mutex> lock{mutex};
+        return statistics;
+    }
+
+    bool reset_statistics()
+    {
+        std::lock_guard<std::mutex> lock{mutex};
+        if (pending || statistics.in_flight)
+            return false;
+        statistics = {};
+        return true;
+    }
+
+    void set_conversion_path(ConversionPath path)
+    {
+        std::lock_guard<std::mutex> lock{mutex};
+        conversion_path = path;
+    }
+
+    void rethrow_failure()
+    {
+        std::exception_ptr failure;
+        {
+            std::lock_guard<std::mutex> lock{mutex};
+            failure = presentation_failure;
+        }
+        if (failure)
+            std::rethrow_exception(failure);
+    }
+
+    void stop()
+    {
+        {
+            std::lock_guard<std::mutex> lock{mutex};
+            if (!stopping)
+            {
+                stopping = true;
+                if (pending)
+                {
+                    ++statistics.cancelled;
+                    statistics.pending_frames = 0;
+                    pending.reset();
+                }
+            }
+        }
+        wakeup.notify_one();
+        if (worker.joinable())
+            worker.join();
+    }
+
+private:
+    void work()
+    {
+        while (true)
+        {
+            std::unique_ptr<Frame> frame;
+            {
+                std::unique_lock<std::mutex> lock{mutex};
+                wakeup.wait(lock, [this] { return stopping || pending; });
+                if (stopping)
+                    return;
+                frame = std::move(pending);
+                --statistics.pending_frames;
+                ++statistics.in_flight;
+                statistics.max_in_flight_observed = std::max(statistics.max_in_flight_observed, statistics.in_flight);
+            }
+
+            auto const worker_start_ns = monotonic_ns();
+            if (frame_trace_enabled())
+                std::fprintf(stderr,
+                    "mirgud_frame event=worker_start frame_seq=%llu source_ready_ns=%llu event_ns=%llu queue_wait_ns=%llu\n",
+                    static_cast<unsigned long long>(frame->sequence),
+                    static_cast<unsigned long long>(frame->source_ready_ns),
+                    static_cast<unsigned long long>(worker_start_ns),
+                    static_cast<unsigned long long>(worker_start_ns - frame->source_ready_ns));
+            auto const submit_start = std::chrono::steady_clock::now();
+            try
+            {
+                present(*frame);
+                auto const submit_end = std::chrono::steady_clock::now();
+                auto const worker_end_ns = monotonic_ns();
+                bool is_first{};
+                {
+                    std::lock_guard<std::mutex> lock{mutex};
+                    statistics.submit_us.add(static_cast<uint64_t>(
+                        std::chrono::duration_cast<std::chrono::microseconds>(submit_end - submit_start).count()));
+                    --statistics.in_flight;
+                    ++statistics.presented;
+                    is_first = statistics.presented == 1;
+                }
+                if (frame_trace_enabled())
+                    std::fprintf(stderr,
+                        "mirgud_frame event=worker_end frame_seq=%llu event_ns=%llu present_ns=%llu result=ok\n",
+                        static_cast<unsigned long long>(frame->sequence),
+                        static_cast<unsigned long long>(worker_end_ns),
+                        static_cast<unsigned long long>(worker_end_ns - worker_start_ns));
+                if (is_first && first_presented)
+                {
+                    try
+                    {
+                        first_presented();
+                    }
+                    catch (...)
+                    {
+                        std::lock_guard<std::mutex> lock{mutex};
+                        ++statistics.lifecycle_callback_failures;
+                        presentation_failure = std::current_exception();
+                        stopping = true;
+                        if (pending)
+                        {
+                            ++statistics.cancelled;
+                            statistics.pending_frames = 0;
+                            pending.reset();
+                        }
+                        wakeup.notify_one();
+                        return;
+                    }
+                }
+            }
+            catch (...)
+            {
+                auto const submit_end = std::chrono::steady_clock::now();
+                auto const worker_end_ns = monotonic_ns();
+                {
+                    std::lock_guard<std::mutex> lock{mutex};
+                    statistics.submit_us.add(static_cast<uint64_t>(
+                        std::chrono::duration_cast<std::chrono::microseconds>(submit_end - submit_start).count()));
+                    --statistics.in_flight;
+                    ++statistics.submit_failures;
+                    presentation_failure = std::current_exception();
+                    stopping = true;
+                    if (pending)
+                    {
+                        ++statistics.cancelled;
+                        statistics.pending_frames = 0;
+                        pending.reset();
+                    }
+                }
+                if (frame_trace_enabled())
+                    std::fprintf(stderr,
+                        "mirgud_frame event=worker_end frame_seq=%llu event_ns=%llu present_ns=%llu result=failed\n",
+                        static_cast<unsigned long long>(frame->sequence),
+                        static_cast<unsigned long long>(worker_end_ns),
+                        static_cast<unsigned long long>(worker_end_ns - worker_start_ns));
+                wakeup.notify_one();
+                if (presentation_failed)
+                    presentation_failed();
+                return;
+            }
+        }
+    }
+
+    std::function<void(Frame const&)> present;
+    std::function<void()> first_presented;
+    std::function<void()> presentation_failed;
+    mutable std::mutex mutex;
+    std::condition_variable wakeup;
+    std::unique_ptr<Frame> pending;
+    Stats statistics;
+    ConversionPath conversion_path{ConversionPath::channel_reorder};
+    std::exception_ptr presentation_failure;
+    bool stopping{};
+    std::thread worker;
+};
+}
+
+#endif

@@ -6,6 +6,22 @@ set(MIR_CLIENT_PLATFORM_PATH ${MIR_LIB_PATH}/client-platform)
 add_subdirectory(gl/)
 add_subdirectory(platforms/)
 
+# E4-T06 production boundary: these are standalone Mir clients/daemons.
+# They intentionally do not link to Android2 server implementation objects.
+mir_add_wrapped_executable(mirgud NOINSTALL ${PROJECT_SOURCE_DIR}/src/utils/gud_screencast.cpp)
+target_include_directories(mirgud PRIVATE SYSTEM ${DRM_INCLUDE_DIRS})
+target_link_libraries(mirgud
+  ${MIRCLIENT_LDFLAGS} ${MIRCLIENT_LIBRARIES}
+  ${Boost_PROGRAM_OPTIONS_LIBRARY}
+  ${EGL_LIBRARIES}
+  ${GLESv2_LIBRARIES}
+  ${DRM_LDFLAGS} ${DRM_LIBRARIES}
+)
+install(PROGRAMS ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/mirgud.bin
+  DESTINATION libexec/lomiri-xdisp
+  RENAME mirgud)
+add_subdirectory(xdisp)
+
 add_definitions(-DMIRCORE_LIBDIR="${MIRCORE_LIBDIR}")
 add_executable(wrapper wrapper.c)
 target_compile_definitions(wrapper PUBLIC
