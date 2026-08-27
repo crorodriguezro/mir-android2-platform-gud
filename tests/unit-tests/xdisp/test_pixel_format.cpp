@@ -421,6 +421,32 @@ TEST(MirgudPresenter, accounts_for_one_presented_frame)
     EXPECT_TRUE(mirgud::accounting_ok(stats));
 }
 
+TEST(MirgudPresenter, direct_mode_has_no_userspace_queue_or_worker)
+{
+    auto const submitting_thread = std::this_thread::get_id();
+    std::thread::id presenting_thread;
+    mirgud::LatestFramePresenter presenter{[&](mirgud::Frame const&)
+    {
+        presenting_thread = std::this_thread::get_id();
+    }, {}, {}, mirgud::PresentationMode::direct};
+
+    presenter.submit(frame());
+    presenter.stop();
+
+    auto const stats = presenter.stats();
+    EXPECT_EQ(submitting_thread, presenting_thread);
+    EXPECT_EQ(1u, stats.submitted);
+    EXPECT_EQ(0u, stats.pending_frames);
+    EXPECT_EQ(0u, stats.max_pending_observed);
+    EXPECT_EQ(0u, stats.in_flight);
+    EXPECT_EQ(1u, stats.max_in_flight_observed);
+    EXPECT_EQ(1u, stats.presented);
+    EXPECT_EQ(0u, stats.dropped);
+    EXPECT_EQ(0u, stats.cancelled);
+    EXPECT_EQ(1u, stats.submit_us.count);
+    EXPECT_TRUE(mirgud::accounting_ok(stats));
+}
+
 TEST(MirgudPresenter, resets_idle_statistics_for_a_measured_interval)
 {
     mirgud::LatestFramePresenter presenter{[](mirgud::Frame const&) {}};

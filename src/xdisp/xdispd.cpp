@@ -599,13 +599,18 @@ private:
         }
         char connector[32];
         std::snprintf(connector, sizeof(connector), "%u", candidate.connector);
-        // Match the known-good KMS smoke format; rgb565 initial modesets were rejected here.
+        auto const* presentation_mode = std::getenv("XDISP_MIRGUD_PRESENTATION_MODE");
+        if (!presentation_mode ||
+            (std::strcmp(presentation_mode, "latest-frame") && std::strcmp(presentation_mode, "direct")))
+            presentation_mode = "latest-frame";
+        g_message("xdispd: mirgud presentation mode=%s", presentation_mode);
         char* arguments[] = {
             const_cast<char*>(XDISP_MIRGUD_PATH), const_cast<char*>("--managed"), const_cast<char*>("--gud-fd"),
             const_cast<char*>("3"), const_cast<char*>("--gud-connector"), connector,
             const_cast<char*>("--status-fd"), const_cast<char*>("4"), const_cast<char*>("--source-mode"),
             const_cast<char*>("extend"), const_cast<char*>("--pixel-format"),
-            const_cast<char*>("xrgb8888"), const_cast<char*>("--mir-socket-file"), const_cast<char*>("/run/mir_socket"),
+            const_cast<char*>("rgb565"), const_cast<char*>("--presentation-mode"), const_cast<char*>(presentation_mode),
+            const_cast<char*>("--mir-socket-file"), const_cast<char*>("/run/mir_socket"),
             const_cast<char*>("--size"), const_cast<char*>("1280"), const_cast<char*>("720"), nullptr};
         posix_spawn_file_actions_t actions;
         int action_result = posix_spawn_file_actions_init(&actions);

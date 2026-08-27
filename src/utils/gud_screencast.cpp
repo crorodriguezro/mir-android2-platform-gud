@@ -1164,6 +1164,7 @@ try
     std::string source_mode{"primary"};
     std::string pixel_format_str{"rgb565"};
     std::string source_pixel_format_str{"auto"};
+    std::string presentation_mode_str{"latest-frame"};
     bool pattern{};
     uint32_t pattern_fps{1};
     uint32_t pattern_duration{};
@@ -1193,6 +1194,8 @@ try
             "transport pixel format: rgb565 (default) or xrgb8888")
         ("source-pixel-format", po::value<std::string>(&source_pixel_format_str),
             "Mir source pixel format: auto (default), abgr8888, xbgr8888, argb8888, xrgb8888, rgb888, bgr888, or rgb565")
+        ("presentation-mode", po::value<std::string>(&presentation_mode_str),
+            "presentation boundary: latest-frame (default) or direct")
         ("size,s", po::value<std::vector<uint32_t>>()->multitoken(), "GUD/screencast size (default 1280 720)")
         ("cap-interval", po::value<uint32_t>(&capture_interval), "capture every N display intervals")
         ("monitor-pid", po::value<pid_t>(&monitor_pid), "sample this compositor PID's fd/sync_file counts")
@@ -1254,6 +1257,8 @@ try
         throw std::runtime_error{"capture-region requires X Y WIDTH HEIGHT, with positive WIDTH and HEIGHT"};
     if (source_mode != "primary" && source_mode != "extend")
         throw std::runtime_error{"source-mode must be primary or extend"};
+    if (presentation_mode_str != "latest-frame" && presentation_mode_str != "direct")
+        throw std::runtime_error{"presentation-mode must be latest-frame or direct"};
     if (source_mode == "extend" && socket.empty())
         throw std::runtime_error{"Aethercast-compatible extend mode requires --mir-socket-file /run/mir_socket"};
     if (source_mode == "extend" && !capture_region.empty())
@@ -1331,11 +1336,14 @@ try
         kms->initial_modeset();
         managed_status("MODESET_COMPLETE");
     }
+    auto const presentation_mode = presentation_mode_str == "direct" ?
+        mirgud::PresentationMode::direct : mirgud::PresentationMode::latest_frame;
+    std::cerr << "mirgud: presentation_mode=" << presentation_mode_str << std::endl;
     mirgud::LatestFramePresenter presenter{[&kms](mirgud::Frame const& frame)
     {
         if (kms)
             kms->present(frame);
-    }, [] { managed_status("ACTIVE"); }, [] { running = false; }};
+    }, [] { managed_status("ACTIVE"); }, [] { running = false; }, presentation_mode};
     bool presentation_and_kms_released{};
     auto const release_presentation_and_kms = [&]
     {

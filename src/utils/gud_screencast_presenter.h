@@ -119,16 +119,25 @@ inline std::string format_accounting_fields(Stats const& stats, bool final)
     return output.str();
 }
 
+enum class PresentationMode
+{
+    latest_frame,
+    direct
+};
+
 class LatestFramePresenter
 {
 public:
     explicit LatestFramePresenter(
         std::function<void(Frame const&)> present,
         std::function<void()> first_presented = {},
-        std::function<void()> presentation_failed = {}) :
+        std::function<void()> presentation_failed = {},
+        PresentationMode mode = PresentationMode::latest_frame) :
         present{std::move(present)}, first_presented{std::move(first_presented)},
-        presentation_failed{std::move(presentation_failed)}, worker{[this] { work(); }}
+        presentation_failed{std::move(presentation_failed)}, mode{mode}
     {
+        if (mode == PresentationMode::latest_frame)
+            worker = std::thread{[this] { work(); }};
     }
 
     ~LatestFramePresenter()
@@ -141,6 +150,11 @@ public:
 
     void submit(Frame frame)
     {
+        if (mode == PresentationMode::direct)
+        {
+            submit_direct(std::move(frame));
+            return;
+        }
         auto const enqueue_start = std::chrono::steady_clock::now();
         auto const submit_entry_ns = monotonic_ns();
         frame.source_ready_ns = frame.source_ready_ns ? frame.source_ready_ns : submit_entry_ns;
@@ -329,6 +343,85 @@ public:
     }
 
 private:
+    void submit_direct(Frame frame)
+    {
+        auto const submit_start = std::chrono::steady_clock::now();
+        auto const submit_entry_ns = monotonic_ns();
+        frame.source_ready_ns = frame.source_ready_ns ? frame.source_ready_ns : submit_entry_ns;
+        if (frame_trace_enabled())
+            std::fprintf(stderr,
+                "mirgud_frame event=submit_enter frame_seq=%llu source_ready_ns=%llu event_ns=%llu mode=direct\n",
+                static_cast<unsigned long long>(frame.sequence),
+                static_cast<unsigned long long>(frame.source_ready_ns),
+                static_cast<unsigned long long>(submit_entry_ns));
+        {
+            std::lock_guard<std::mutex> lock{mutex};
+            if (stopping)
+                return;
+            ++statistics.submitted;
+            ++statistics.in_flight;
+            statistics.max_in_flight_observed = std::max(statistics.max_in_flight_observed,
+                statistics.in_flight);
+        }
+
+        bool is_first{};
+        try
+        {
+            present(frame);
+            auto const submit_end = std::chrono::steady_clock::now();
+            {
+                std::lock_guard<std::mutex> lock{mutex};
+                auto const duration_us = static_cast<uint64_t>(
+                    std::chrono::duration_cast<std::chrono::microseconds>(submit_end - submit_start).count());
+                statistics.enqueue_us.add(duration_us);
+                statistics.submit_us.add(duration_us);
+                --statistics.in_flight;
+                ++statistics.presented;
+                is_first = statistics.presented == 1;
+            }
+            auto const submit_return_ns = monotonic_ns();
+            if (frame_trace_enabled())
+                std::fprintf(stderr,
+                    "mirgud_frame event=submit_return frame_seq=%llu event_ns=%llu duration_ns=%llu accepted=true pending=0 mode=direct\n",
+                    static_cast<unsigned long long>(frame.sequence),
+                    static_cast<unsigned long long>(submit_return_ns),
+                    static_cast<unsigned long long>(submit_return_ns - submit_entry_ns));
+        }
+        catch (...)
+        {
+            auto const submit_end = std::chrono::steady_clock::now();
+            {
+                std::lock_guard<std::mutex> lock{mutex};
+                auto const duration_us = static_cast<uint64_t>(
+                    std::chrono::duration_cast<std::chrono::microseconds>(submit_end - submit_start).count());
+                statistics.enqueue_us.add(duration_us);
+                statistics.submit_us.add(duration_us);
+                --statistics.in_flight;
+                ++statistics.submit_failures;
+                presentation_failure = std::current_exception();
+                stopping = true;
+            }
+            if (presentation_failed)
+                presentation_failed();
+            return;
+        }
+
+        if (is_first && first_presented)
+        {
+            try
+            {
+                first_presented();
+            }
+            catch (...)
+            {
+                std::lock_guard<std::mutex> lock{mutex};
+                ++statistics.lifecycle_callback_failures;
+                presentation_failure = std::current_exception();
+                stopping = true;
+            }
+        }
+    }
+
     void work()
     {
         while (true)
@@ -440,6 +533,7 @@ private:
     ConversionPath conversion_path{ConversionPath::channel_reorder};
     std::exception_ptr presentation_failure;
     bool stopping{};
+    PresentationMode mode;
     std::thread worker;
 };
 }
