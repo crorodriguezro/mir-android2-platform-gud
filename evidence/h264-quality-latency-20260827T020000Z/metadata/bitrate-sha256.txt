@@ -1,0 +1,8 @@
+5ca7fb3e0757dd99a08d2a01fd8fbe23195a7a12a2c3ffddd8bb2148ca6759f3  mir-android2-platform-gud/evidence/h264-quality-latency-20260827T020000Z/bitrate/h264-sweep-10000000.stderr
+5d69202f9bb81b20fe2a02b3b3931462ba39f2030993f8d96a2beb2a0f692a09  mir-android2-platform-gud/evidence/h264-quality-latency-20260827T020000Z/bitrate/h264-sweep-10000000.ts
+79056148b47ca811a04e0c0e44a2cff6d6dd5a9ffb6e29d9155b6ac51417ce7e  mir-android2-platform-gud/evidence/h264-quality-latency-20260827T020000Z/bitrate/h264-sweep-15000000.stderr
+5d69202f9bb81b20fe2a02b3b3931462ba39f2030993f8d96a2beb2a0f692a09  mir-android2-platform-gud/evidence/h264-quality-latency-20260827T020000Z/bitrate/h264-sweep-15000000.ts
+38052dd949e0463d76f727b9a91009ed5aa6d29f31b502627fb28626937d9b82  mir-android2-platform-gud/evidence/h264-quality-latency-20260827T020000Z/bitrate/h264-sweep-25000000.stderr
+5d69202f9bb81b20fe2a02b3b3931462ba39f2030993f8d96a2beb2a0f692a09  mir-android2-platform-gud/evidence/h264-quality-latency-20260827T020000Z/bitrate/h264-sweep-25000000.ts
+f40af0ef0313e7bad66228764b78b5231fb2a0a01a728b044fc897ef12cd269e  mir-android2-platform-gud/evidence/h264-quality-latency-20260827T020000Z/bitrate/h264-sweep-40000000.stderr
+5d69202f9bb81b20fe2a02b3b3931462ba39f2030993f8d96a2beb2a0f692a09  mir-android2-platform-gud/evidence/h264-quality-latency-20260827T020000Z/bitrate/h264-sweep-40000000.ts

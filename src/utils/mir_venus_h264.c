@@ -112,11 +112,131 @@ static uint64_t monotonic_ns(void)
 	return (uint64_t)value.tv_sec * 1000000000ULL + value.tv_nsec;
 }
 
+static uint8_t clamp8(int value)
+{
+	return value < 0 ? 0 : value > 255 ? 255 : (uint8_t)value;
+}
+
+static void mir_abgr_to_nv12(struct mapped_buffer *buffer,
+	MirGraphicsRegion const *region, unsigned int width, unsigned int height,
+	unsigned int y_stride, unsigned int y_scanlines)
+{
+	uint8_t *y_plane = buffer->ptr[0];
+	uint8_t *uv_plane = buffer->planes > 1 ? buffer->ptr[1] :
+		y_plane + (size_t)y_stride * y_scanlines;
+	unsigned int x, y;
+
+	memset(y_plane, 16, buffer->len[0]);
+	if (buffer->planes > 1)
+		memset(uv_plane, 128, buffer->len[1]);
+	else
+		memset(uv_plane, 128, buffer->len[0] - (size_t)y_stride * y_scanlines);
+	for (y = 0; y < height; ++y) {
+		uint8_t const *source = (uint8_t const *)region->vaddr +
+			(size_t)(height - 1 - y) * region->stride;
+		for (x = 0; x < width; ++x) {
+			uint8_t const *p = source + 4 * x;
+			/* Mir ABGR8888 is [R, G, B, A] in memory on this target. */
+			y_plane[(size_t)y * y_stride + x] =
+				clamp8(((47*p[0] + 157*p[1] + 16*p[2] + 128) >> 8) + 16);
+		}
+	}
+	for (y = 0; y < height; y += 2) {
+		for (x = 0; x < width; x += 2) {
+			unsigned int sum_r = 0, sum_g = 0, sum_b = 0;
+			unsigned int dy, dx;
+			for (dy = 0; dy != 2; ++dy) {
+				uint8_t const *source = (uint8_t const *)region->vaddr +
+					(size_t)(height - 1 - y - dy) * region->stride;
+				for (dx = 0; dx != 2; ++dx) {
+					uint8_t const *p = source + 4 * (x + dx);
+					sum_r += p[0];
+					sum_g += p[1];
+					sum_b += p[2];
+				}
+			}
+			sum_r = (sum_r + 2) / 4;
+			sum_g = (sum_g + 2) / 4;
+			sum_b = (sum_b + 2) / 4;
+			uv_plane[(size_t)(y / 2) * y_stride + x] =
+				clamp8(((-26*(int)sum_r - 87*(int)sum_g + 112*(int)sum_b + 128) >> 8) + 128);
+			uv_plane[(size_t)(y / 2) * y_stride + x + 1] =
+				clamp8(((112*(int)sum_r - 102*(int)sum_g - 10*(int)sum_b + 128) >> 8) + 128);
+		}
+	}
+}
+
+static void set_rec709_limited(struct v4l2_pix_format_mplane *format)
+{
+	format->colorspace = V4L2_COLORSPACE_REC709;
+	format->ycbcr_enc = V4L2_YCBCR_ENC_709;
+	format->quantization = V4L2_QUANTIZATION_LIM_RANGE;
+	format->xfer_func = V4L2_XFER_FUNC_709;
+}
+
+static void print_color_format(char const *name,
+	struct v4l2_pix_format_mplane const *format)
+{
+	fprintf(stderr, "%s colorspace=%u ycbcr_enc=%u quantization=%u xfer_func=%u\n",
+		name, format->colorspace, format->ycbcr_enc, format->quantization,
+		format->xfer_func);
+}
+
+static void fill_test_pattern(uint8_t *pixels, unsigned int width,
+	unsigned int height)
+{
+	static uint8_t const colors[][3] = {
+		{0, 0, 0}, {255, 255, 255}, {128, 128, 128},
+		{255, 0, 0}, {0, 255, 0}, {0, 0, 255},
+		{0, 255, 255}, {255, 0, 255}, {255, 255, 0}
+	};
+	unsigned int x, y;
+	unsigned int const bar_height = height / 2;
+	unsigned int const bar_width = width / (unsigned int)(sizeof(colors) / sizeof(colors[0]));
+	for (y = 0; y < height; ++y) {
+		for (x = 0; x < width; ++x) {
+			uint8_t const *color;
+			unsigned int bar = x / bar_width;
+			if (bar >= sizeof(colors) / sizeof(colors[0]))
+				bar = (unsigned int)(sizeof(colors) / sizeof(colors[0])) - 1;
+			if (y < bar_height)
+				color = colors[bar];
+			else if (y < bar_height + 64)
+				color = (x < width / 2) ? (uint8_t const[]) {16, 16, 16} :
+					(uint8_t const[]) {235, 235, 235};
+			else if (y < bar_height + 128)
+				color = (x & 1) ? (uint8_t const[]) {255, 0, 0} :
+					(uint8_t const[]) {0, 0, 255};
+			else
+				color = (uint8_t const[]) {((x * 255U) / (width - 1)),
+					((y * 255U) / (height - 1)), 128};
+			pixels[(size_t)y * width * 4 + 4 * x + 0] = color[0];
+			pixels[(size_t)y * width * 4 + 4 * x + 1] = color[1];
+			pixels[(size_t)y * width * 4 + 4 * x + 2] = color[2];
+			pixels[(size_t)y * width * 4 + 4 * x + 3] = 255;
+		}
+	}
+}
+
 static int xioctl(int fd, unsigned long request, void *arg)
 {
 	int ret;
 	do ret = ioctl(fd, request, arg); while (ret < 0 && errno == EINTR);
 	return ret;
+}
+
+static void print_encoder_input_formats(int fd, enum v4l2_buf_type type)
+{
+	struct v4l2_fmtdesc description = {.type = type};
+	for (description.index = 0;
+	     xioctl(fd, VIDIOC_ENUM_FMT, &description) == 0;
+	     ++description.index)
+		fprintf(stderr, "venus input format %c%c%c%c description=%s\n",
+			description.pixelformat & 0xff,
+			(description.pixelformat >> 8) & 0xff,
+			(description.pixelformat >> 16) & 0xff,
+			(description.pixelformat >> 24) & 0xff,
+			description.description);
 }
 
 static int write_full(int fd, void const *data, size_t length)
@@ -269,7 +389,10 @@ static int write_access_unit(int fd, struct ts_mux *mux,
 static int set_ctrl(int fd, uint32_t id, int value)
 {
 	struct v4l2_control control = {.id = id, .value = value};
-	if (xioctl(fd, VIDIOC_S_CTRL, &control) == 0) return 0;
+	if (xioctl(fd, VIDIOC_S_CTRL, &control) == 0) {
+		fprintf(stderr, "control 0x%x=%d accepted\n", id, value);
+		return 0;
+	}
 	fprintf(stderr, "control 0x%x=%d: %s (continuing)\n", id, value,
 		strerror(errno));
 	return -1;
@@ -430,14 +553,17 @@ int main(int argc, char **argv)
 	unsigned int target_fps = argc > 6 ? (unsigned int)strtoul(argv[6], NULL, 10) : 30;
 	char const *transport = argc > 7 ? argv[7] : "annexb";
 	unsigned int bitrate = argc > 8 ? (unsigned int)strtoul(argv[8], NULL, 10) : 15000000;
+	unsigned int capture_width = argc > 9 ? (unsigned int)strtoul(argv[9], NULL, 10) : width;
+	unsigned int capture_height = argc > 10 ? (unsigned int)strtoul(argv[10], NULL, 10) : height;
 	struct ts_mux mux = {0};
 	struct mir_api mir;
 	MirConnection *connection = NULL;
 	MirScreencastSpec *spec = NULL;
 	MirScreencast *screencast = NULL;
 	MirBufferStream *stream = NULL;
-	MirRectangle rectangle = {left, 0, width, height};
+	MirRectangle rectangle = {left, 0, capture_width, capture_height};
 	struct mapped_buffer output[NBUF] = {0}, capture[NBUF] = {0};
+	uint8_t *test_pattern = NULL;
 	struct v4l2_format format = {0};
 	struct v4l2_streamparm parm = {0};
 	enum v4l2_buf_type output_type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
@@ -452,9 +578,10 @@ int main(int argc, char **argv)
 	size_t maximum_access_unit = 0;
 	uint64_t start_ns, end_ns;
 
-	if (!frame_limit || !width || !height || !target_fps || target_fps > 240 ||
+	if (!frame_limit || !width || !height || !capture_width || !capture_height ||
+	    target_fps > 240 ||
 	    (strcmp(transport, "annexb") && strcmp(transport, "mpegts")) || !bitrate) {
-		fprintf(stderr, "usage: %s [output|-] [frames] [width] [height] [capture-left] [fps] [annexb|mpegts] [bitrate]\n", argv[0]);
+		fprintf(stderr, "usage: %s [output|-] [frames] [width] [height] [capture-left] [fps] [annexb|mpegts] [bitrate] [capture-width] [capture-height]\n", argv[0]);
 		return EXIT_FAILURE;
 	}
 	mux.enabled = !strcmp(transport, "mpegts");
@@ -498,7 +625,9 @@ int main(int argc, char **argv)
 	format.fmt.pix_mp.field = V4L2_FIELD_NONE;
 	format.fmt.pix_mp.num_planes = 1;
 	format.fmt.pix_mp.plane_fmt[0].sizeimage = 2 * 1024 * 1024;
+	set_rec709_limited(&format.fmt.pix_mp);
 	if (xioctl(encoder_fd, VIDIOC_S_FMT, &format) < 0) { perror("S_FMT capture"); goto done; }
+	print_color_format("venus capture", &format.fmt.pix_mp);
 	capture_planes = format.fmt.pix_mp.num_planes;
 	for (plane = 0; plane < capture_planes; ++plane)
 		capture_sizes[plane] = format.fmt.pix_mp.plane_fmt[plane].sizeimage;
@@ -507,13 +636,26 @@ int main(int argc, char **argv)
 	format.type = output_type;
 	format.fmt.pix_mp.width = width;
 	format.fmt.pix_mp.height = height;
-	format.fmt.pix_mp.pixelformat = V4L2_PIX_FMT_RGB32;
+	format.fmt.pix_mp.pixelformat = V4L2_PIX_FMT_NV12;
 	format.fmt.pix_mp.field = V4L2_FIELD_NONE;
+	set_rec709_limited(&format.fmt.pix_mp);
+	print_encoder_input_formats(encoder_fd, output_type);
 	if (xioctl(encoder_fd, VIDIOC_S_FMT, &format) < 0) { perror("S_FMT output"); goto done; }
+	print_color_format("venus input", &format.fmt.pix_mp);
+	fprintf(stderr,
+		"venus accepted input=%c%c%c%c width=%u height=%u planes=%u pitch=%u size=%u\n",
+		format.fmt.pix_mp.pixelformat & 0xff,
+		(format.fmt.pix_mp.pixelformat >> 8) & 0xff,
+		(format.fmt.pix_mp.pixelformat >> 16) & 0xff,
+		(format.fmt.pix_mp.pixelformat >> 24) & 0xff,
+		format.fmt.pix_mp.width, format.fmt.pix_mp.height,
+		format.fmt.pix_mp.num_planes,
+		format.fmt.pix_mp.plane_fmt[0].bytesperline,
+		format.fmt.pix_mp.plane_fmt[0].sizeimage);
 	output_planes = format.fmt.pix_mp.num_planes;
 	for (plane = 0; plane < output_planes; ++plane)
 		output_sizes[plane] = format.fmt.pix_mp.plane_fmt[plane].sizeimage;
-	fprintf(stderr, "mir_venus config=%ux%u source=Mir-ABGR8888 encoder=Venus-RGB4 output=H264 "
+	fprintf(stderr, "mir_venus config=%ux%u source=Mir-ABGR8888 encoder=Venus-NV12 output=H264 "
 		"transport=%s bitrate=%u capture_buffers=%u requested_frames=%u\n",
 		width, height, transport, bitrate, NBUF, frame_limit);
 
@@ -562,13 +704,12 @@ int main(int argc, char **argv)
 				goto done;
 		}
 		{
-			MirGraphicsRegion region = {0};
+		MirGraphicsRegion region = {0};
 			struct v4l2_plane p[NPLANE];
 			struct v4l2_buffer buffer = {.type = output_type,
 				.memory = V4L2_MEMORY_USERPTR, .index = (unsigned int)free_index,
 				.length = output[free_index].planes, .m.planes = p};
 			uint64_t copy_start, swap_start;
-			unsigned int row;
 			mir.buffer_stream_get_graphics_region(stream, &region);
 			if (!region.vaddr || region.width != (int)width || region.height != (int)height ||
 			    region.stride < (int)(width * 4) || region.pixel_format != 1) {
@@ -576,14 +717,24 @@ int main(int argc, char **argv)
 					region.width, region.height, region.stride, region.pixel_format, region.vaddr);
 				goto done;
 			}
+			if (getenv("MIR_VENUS_TEST_PATTERN")) {
+				if (!test_pattern)
+					test_pattern = malloc((size_t)width * height * 4);
+				if (!test_pattern) {
+					fprintf(stderr, "cannot allocate test pattern\n");
+					goto done;
+				}
+				fill_test_pattern(test_pattern, width, height);
+				region.vaddr = test_pattern;
+				region.stride = (int)(width * 4);
+			}
 			copy_start = monotonic_ns();
-			for (row = 0; row < height; ++row)
-				memcpy((uint8_t *)output[free_index].ptr[0] + (size_t)row * width * 4,
-					(uint8_t const *)region.vaddr + (size_t)row * region.stride,
-					(size_t)width * 4);
+			mir_abgr_to_nv12(&output[free_index], &region, width, height,
+				format.fmt.pix_mp.plane_fmt[0].bytesperline ?: width,
+				height);
 			copy_ns += monotonic_ns() - copy_start;
 			prepare_planes(&output[free_index], p);
-			p[0].bytesused = width * height * 4;
+			p[0].bytesused = output_sizes[0];
 			buffer.timestamp.tv_sec = submitted / target_fps;
 			buffer.timestamp.tv_usec =
 				(submitted % target_fps) * (1000000U / target_fps);
@@ -638,6 +789,7 @@ done:
 		xioctl(encoder_fd, VIDIOC_STREAMOFF, &capture_type);
 	}
 	if (output_fd >= 0 && output_fd != STDOUT_FILENO) close(output_fd);
+	free(test_pattern);
 	if (ion_fd >= 0) close(ion_fd);
 	if (encoder_fd >= 0) close(encoder_fd);
 	/*

@@ -1,0 +1,12 @@
+## poc/h264-usb-display
+ M src/utils/mir_venus_h264.c
+?? doc/benchmarks/
+?? doc/tools/
+?? evidence/h264-quality-latency-20260827T020000Z/
+?? src/utils/active_drm_frame_sink.c
+?? src/utils/fb_frame_sink.c
+?? src/utils/proc_mem_frame_sink.c
+?? src/xdisp/__pycache__/
+?? tests/__pycache__/
+?? tests/unit-tests/xdisp/__pycache__/
+?? tools/__pycache__/

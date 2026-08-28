@@ -1,0 +1,13 @@
+Branch: poc/h264-usb-display
+Sender build:
+aarch64-redhat-linux-gcc -O2 -Wall -Wextra -Werror -o /tmp/mir-venus-h264-pattern src/utils/mir_venus_h264.c -ldl
+Sender SHA-256: f0bcbe6112cbb4fbfacb9aa7560dbdc56301a8dbff4155a70433b711b5a31cf0
+Receiver shim build:
+aarch64-redhat-linux-gcc -shared -fPIC -O2 -Wall -Wextra -Werror -o /tmp/v4l2-h264-sizeimage-preload.so src/utils/v4l2_h264_sizeimage_preload.c -ldl
+Receiver sink diagnostic builds:
+aarch64-redhat-linux-gcc -O2 -Wall -Wextra -Werror -o /tmp/active-drm-sink-async src/utils/active_drm_frame_sink.c -ldrm
+aarch64-redhat-linux-gcc -O2 -Wall -Wextra -Werror -o /tmp/active-drm-sink-nosync src/utils/active_drm_frame_sink.c -ldrm
+Physical sender invocation:
+MIR_VENUS_TEST_PATTERN=1 /home/phablet/mir-venus-h264-pattern /tmp/h264-pattern-B.ts 30 1920 1080 1080 30 mpegts B
+Physical live invocation:
+/home/phablet/mir-venus-h264-bt709 - 90 1920 1080 1080 30 mpegts 25000000 | nc -N 10.55.0.2 5504

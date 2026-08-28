@@ -1,0 +1,6 @@
+## poc/h264-usb-display
+?? backport-4.9/.gud_pipe.o.d
+?? backport-4.9/tests/gud-kms-fill-aarch64
+?? backport-4.9/tests/gud-kms-fill-ab-aarch64
+?? backport-4.9/tests/gud-kms-smoke
+?? backport-4.9/tests/gud-kms-stage

@@ -1,0 +1,13 @@
+Source pattern: Mir-compatible ABGR8888 memory layout [R,G,B,A].
+Coordinates sampled from decoded frame: y=800, x=106,320,533,746,960,1173,1386,1600,1813.
+
+Expected/BT.709 limited input interpretation:
+(0,0,0) (255,255,253) (128,128,128) (255,0,0) (0,254,0) (1,0,255) (0,254,253) (255,0,255) (254,255,0)
+
+FFmpeg default interpretation of the same bitstream (matrix mismatch):
+(0,0,0) (255,255,253) (128,128,128) (233,0,2) (19,255,6) (3,0,244) (21,255,250) (236,0,246) (252,255,8)
+
+Receiver-side h264_metadata correction:
+video_full_range_flag=0, colour_primaries=1, transfer_characteristics=1,
+matrix_coefficients=1. FFprobe then reports color_range=tv,
+color_space=bt709, color_transfer=bt709, color_primaries=bt709.

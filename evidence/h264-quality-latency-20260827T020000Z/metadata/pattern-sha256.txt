@@ -1,0 +1,10 @@
+1a11ffde090beb9c71455b8edbc346a20df85e370a2ac3935733f5a61e89e5f5  mir-android2-platform-gud/evidence/h264-quality-latency-20260827T020000Z/bitrate/h264-pattern-10000000.stderr
+948d827818d125ef25a0c32233b960a695185f7f8c0172ca9e5b3c231dab6d4e  mir-android2-platform-gud/evidence/h264-quality-latency-20260827T020000Z/bitrate/h264-pattern-10000000.ts
+35c0872f21d8f0901954902e85c6aa66162d5a882ba04b51aace2d9d0e16b962  mir-android2-platform-gud/evidence/h264-quality-latency-20260827T020000Z/bitrate/h264-pattern-15000000.stderr
+948d827818d125ef25a0c32233b960a695185f7f8c0172ca9e5b3c231dab6d4e  mir-android2-platform-gud/evidence/h264-quality-latency-20260827T020000Z/bitrate/h264-pattern-15000000.ts
+a3a57199fd701cbd91a774c8155957092f1749c4f014a5b10dbbc6e22b915686  mir-android2-platform-gud/evidence/h264-quality-latency-20260827T020000Z/bitrate/h264-pattern-25000000.stderr
+948d827818d125ef25a0c32233b960a695185f7f8c0172ca9e5b3c231dab6d4e  mir-android2-platform-gud/evidence/h264-quality-latency-20260827T020000Z/bitrate/h264-pattern-25000000.ts
+aaed214c007626d8875803604b8db07b5022193f6719cb7d2c91488c02e83a06  mir-android2-platform-gud/evidence/h264-quality-latency-20260827T020000Z/bitrate/h264-pattern-40000000.stderr
+39891f5ce0a42a8591f49a92f20a607978b84e78f0e48582a53483fe7627671d  mir-android2-platform-gud/evidence/h264-quality-latency-20260827T020000Z/bitrate/h264-pattern-40000000.ts
+0f373208030edaf64eaf519434b17fa2419242f89de574c88fc1ecccb05550e3  mir-android2-platform-gud/evidence/h264-quality-latency-20260827T020000Z/bitrate/pattern-decoded-bt709.png
+f887bd52d3860a1f2cff1b87a7729bd389a421bf969c363d28770930ea4899b9  mir-android2-platform-gud/evidence/h264-quality-latency-20260827T020000Z/bitrate/pattern-decoded-default.png

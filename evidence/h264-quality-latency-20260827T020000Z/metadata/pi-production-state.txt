@@ -1,0 +1,3 @@
+service=active
+udc=configured
+bound=3f980000.usb

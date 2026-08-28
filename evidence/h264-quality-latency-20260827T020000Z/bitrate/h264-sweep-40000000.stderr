@@ -1,0 +1,11 @@
+venus capture colorspace=3 ycbcr_enc=2 quantization=2 xfer_func=1
+venus input format NV12 description=Y/CbCr 4:2:0
+venus input format Q128 description=NV12 UBWC
+venus input format RGB4 description=32-bit A/XRGB 8-8-8-8
+venus input format NV21 description=Y/CrCb 4:2:0
+venus input format Q12A description=Y/CbCr 4:2:0 TP10 UBWC
+venus input format QP10 description=Y/CbCr 4:2:0 P10 Venus
+venus input colorspace=3 ycbcr_enc=2 quantization=2 xfer_func=1
+venus accepted input=NV12 width=1920 height=1080 planes=1 pitch=0 size=3153920
+mir_venus config=1920x1080 source=Mir-ABGR8888 encoder=Venus-NV12 output=H264 transport=mpegts bitrate=40000000 capture_buffers=4 requested_frames=60
+mir_venus result submitted=60 access_units=60 bytes=10304 seconds=2.399 fps=25.02 mbps=0.03 max_access_unit=1408 copy_ms_avg=32.069 swap_ms_avg=5.379 max_in_flight=3 drained=true

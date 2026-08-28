@@ -1,0 +1,11 @@
+active-drm-sink pid=11045 fd=3 fb=673 handle=15 pitch=3840 input=1920x1080 flip-y=0 scale-full=0
+[swscaler @ 0x7f84011e40] [swscaler @ 0x7f8401fd10] No accelerated colorspace conversion found from yuv420p to rgb565le.
+[swscaler @ 0x7f84011e40] [swscaler @ 0x7f84031b70] No accelerated colorspace conversion found from yuv420p to rgb565le.
+[swscaler @ 0x7f84011e40] [swscaler @ 0x7f840439d0] No accelerated colorspace conversion found from yuv420p to rgb565le.
+[swscaler @ 0x7f84011e40] [swscaler @ 0x7f84055830] No accelerated colorspace conversion found from yuv420p to rgb565le.
+[swscaler @ 0x7f84011e40] [swscaler @ 0x7f84067690] No accelerated colorspace conversion found from yuv420p to rgb565le.
+active-drm-sink first-frame-presented
+active-drm-sink frames=30 seconds=17.304 fps=1.73
+active-drm-sink frames=60 seconds=18.451 fps=3.25
+active-drm-sink frames=90 seconds=19.729 fps=4.56
+active-drm-sink frames=90
