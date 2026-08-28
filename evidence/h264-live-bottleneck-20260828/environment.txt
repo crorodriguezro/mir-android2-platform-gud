@@ -1,0 +1,24 @@
+benchmark_date=2026-08-28
+repository=/home/cristianr/Projects/linux-mobile/mir-android2-platform-gud
+branch=poc/h264-usb-display
+phone=OnePlus 6 / 192.168.1.120
+phone_kernel=Linux ubuntu-phablet 4.9.112-g6b190d86 #1 SMP PREEMPT Thu Mar 12 00:01:48 UTC 2026 aarch64
+phone_cpu_governor=schedutil (cpu0-cpu7)
+phone_scaling_cur_freq_khz=825600,825600,825600,902400,1286400,1286400,1286400,1286400
+phone_loadavg_at_collection=0.07 0.14 0.15
+phone_usb_host_mode=host
+phone_transport=Wi-Fi wlan0 192.168.1.120/24 to Pi 192.168.1.110:5516
+phone_xdisp_service=inactive
+pi=Raspberry Pi Zero 2 W / 192.168.1.110
+pi_kernel=Linux raspberrypi 6.12.47+rpt-rpi-v8-ffs-xfercompltrace #2 SMP PREEMPT Sun Aug 16 23:57:59 -05 2026 aarch64
+pi_cpu_governor=ondemand (cpu0-cpu3)
+pi_scaling_cur_freq_khz=1000000,1000000,1000000,1000000
+pi_loadavg_at_collection=0.21 0.18 0.19
+pi_gud_userspace_service=active
+pi_gud_owner=PID 583 /home/cristian/gud-drm-e4-t03-cdf83d37 /dev/dri/card0
+pi_direct_plane=84
+pi_direct_crtc=95
+pi_udc_state=configured
+receiver_device=/dev/video10
+receiver_mode=H264 -> native linear NV12 1920x1088 -> DRM PRIME -> VC4 1920x1080
+benchmark_receiver_flag=H264_RECEIVER_NO_RESTORE=1

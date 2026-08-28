@@ -54,10 +54,33 @@ struct capture_buffer {
 struct metadata {
 	uint64_t sequence;
 	uint64_t source_ns;
+	uint64_t receive_ns;
+	uint64_t decoder_submit_ns;
 };
 
 struct sample {
 	int64_t value_ns;
+};
+
+#define PI_SAMPLE_COUNT 4096U
+
+struct pi_present_sample {
+	uint64_t receive_to_submit_ns;
+	uint64_t decode_ns;
+	uint64_t decode_to_drm_ns;
+	uint64_t drm_submit_ns;
+	uint64_t total_ns;
+	int64_t relative_age_ns;
+};
+
+struct pi_stats {
+	uint64_t decoder_submitted;
+	uint64_t decoder_completed;
+	uint64_t drm_submitted;
+	uint64_t decoder_durations[PI_SAMPLE_COUNT];
+	unsigned int decoder_duration_count;
+	struct pi_present_sample presented[PI_SAMPLE_COUNT];
+	unsigned int presented_count;
 };
 
 static volatile sig_atomic_t stop_requested;
@@ -243,6 +266,100 @@ static void sort_samples(struct sample *samples, unsigned int count)
 	}
 }
 
+static uint64_t present_sample_value(struct pi_present_sample const *sample, int metric)
+{
+	switch (metric) {
+	case 0: return sample->receive_to_submit_ns;
+	case 1: return sample->decode_ns;
+	case 2: return sample->decode_to_drm_ns;
+	case 3: return sample->drm_submit_ns;
+	default: return sample->total_ns;
+	}
+}
+
+static void report_pi_metric(struct pi_present_sample const *samples, unsigned int count,
+	char const *name, int metric)
+{
+	uint64_t values[PI_SAMPLE_COUNT];
+	uint64_t sum = 0, maximum = 0;
+	unsigned int i, p50, p95;
+	if (!count) return;
+	for (i = 0; i < count; ++i) {
+		values[i] = present_sample_value(&samples[i], metric);
+		sum += values[i];
+		if (values[i] > maximum) maximum = values[i];
+	}
+	for (i = 1; i < count; ++i) {
+		uint64_t value = values[i];
+		unsigned int j = i;
+		while (j && values[j - 1] > value) {
+			values[j] = values[j - 1];
+			--j;
+		}
+		values[j] = value;
+	}
+	p50 = count / 2;
+	p95 = (count * 95) / 100;
+	if (p95 >= count) p95 = count - 1;
+	fprintf(stderr, "pi_timing metric=%s count=%u mean_us=%.1f p50_us=%.1f "
+		"p95_us=%.1f max_us=%.1f\n", name, count,
+		sum / 1000.0 / count, values[p50] / 1000.0,
+		values[p95] / 1000.0, maximum / 1000.0);
+}
+
+static void report_pi_decode_metric(struct pi_stats const *stats)
+{
+	uint64_t values[PI_SAMPLE_COUNT];
+	uint64_t sum = 0, maximum = 0;
+	unsigned int i, p50, p95, count = stats->decoder_duration_count;
+	if (!count) return;
+	for (i = 0; i < count; ++i) {
+		values[i] = stats->decoder_durations[i];
+		sum += values[i];
+		if (values[i] > maximum) maximum = values[i];
+	}
+	for (i = 1; i < count; ++i) {
+		uint64_t value = values[i];
+		unsigned int j = i;
+		while (j && values[j - 1] > value) {
+			values[j] = values[j - 1];
+			--j;
+		}
+		values[j] = value;
+	}
+	p50 = count / 2;
+	p95 = (count * 95) / 100;
+	if (p95 >= count) p95 = count - 1;
+	fprintf(stderr, "pi_timing metric=decode count=%u mean_us=%.1f p50_us=%.1f "
+		"p95_us=%.1f max_us=%.1f\n", count,
+		sum / 1000.0 / count, values[p50] / 1000.0,
+		values[p95] / 1000.0, maximum / 1000.0);
+}
+
+static int no_restore_requested(void)
+{
+	char const *value = getenv("H264_RECEIVER_NO_RESTORE");
+	return value && value[0] == '1' && value[1] == '\0';
+}
+
+static void report_pi_stats(struct pi_stats const *stats, unsigned int received,
+	unsigned int decoded, unsigned int presented, unsigned int dropped)
+{
+	fprintf(stderr, "pi_counts received=%u decoder_submitted=%llu decoder_completed=%u "
+		"drm_submitted=%u decoder_replaced=%u decoder_missing=%u dropped_before_decode=%u "
+		"presentation_completed=unavailable\n", received,
+		(unsigned long long)stats->decoder_submitted, decoded, presented,
+		decoded >= presented ? decoded - presented : 0,
+		stats->decoder_submitted >= decoded ?
+			(unsigned int)(stats->decoder_submitted - decoded) : 0, dropped);
+	report_pi_decode_metric(stats);
+	report_pi_metric(stats->presented, stats->presented_count,
+		"receive_to_decoder_submit", 0);
+	report_pi_metric(stats->presented, stats->presented_count, "decode_to_drm", 2);
+	report_pi_metric(stats->presented, stats->presented_count, "drm_submit", 3);
+	report_pi_metric(stats->presented, stats->presented_count, "receive_to_presentation_submit", 4);
+}
+
 int main(int argc, char **argv)
 {
 	unsigned int port = argc > 1 ? (unsigned int)strtoul(argv[1], NULL, 10) : 5505;
@@ -259,6 +376,7 @@ int main(int argc, char **argv)
 	unsigned int metadata_head = 0, metadata_tail = 0, age_count = 0;
 	unsigned int frames = 0, decoded = 0, presented = 0, dropped = 0;
 	int old_capture = -1;
+	struct pi_stats stats = {0};
 	uint64_t total_decode_ns = 0, total_commit_ns = 0;
 	uint64_t first_source_ns = 0, first_rx_ns = 0;
 	struct rusage usage;
@@ -377,6 +495,7 @@ int main(int argc, char **argv)
 		uint8_t header[32];
 		unsigned int output_index;
 		uint32_t length;
+		uint64_t receive_ns, decoder_submit_ns;
 		struct pollfd wait_fd;
 		for (;;) {
 			for (output_index = 0; output_index < OUTPUT_COUNT; ++output_index)
@@ -404,6 +523,7 @@ int main(int argc, char **argv)
 				output[output_index].length); goto done;
 		}
 		if (read_full(connection, output[output_index].address, length) <= 0) break;
+		receive_ns = monotonic_ns();
 		if (metadata_tail - metadata_head >= META_COUNT) {
 			fprintf(stderr, "metadata queue overflow\n"); goto done;
 		}
@@ -412,15 +532,20 @@ int main(int argc, char **argv)
 		if (!first_rx_ns) first_rx_ns = monotonic_ns();
 		if (!first_source_ns) first_source_ns = metadata[metadata_tail % META_COUNT].source_ns;
 		++metadata_tail;
+		decoder_submit_ns = monotonic_ns();
 		if (queue_output(decoder, output_index, &output[output_index], length) < 0) {
 			perror("QBUF H264"); goto done;
 		}
+		metadata[(metadata_tail - 1) % META_COUNT].receive_ns = receive_ns;
+		metadata[(metadata_tail - 1) % META_COUNT].decoder_submit_ns = decoder_submit_ns;
+		++stats.decoder_submitted;
 		++frames;
 
 		/* Drain immediately; no PTS pacing and no receiver-side media queue. */
 		{
 			int latest_capture = -1;
 			struct metadata latest_meta = {0};
+			uint64_t latest_decode_end_ns = 0;
 			for (;;) {
 				struct v4l2_plane plane = {0};
 				struct v4l2_buffer buffer = {.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE,
@@ -440,7 +565,11 @@ int main(int argc, char **argv)
 				latest_meta = (struct metadata){0};
 				if (metadata_head != metadata_tail)
 					latest_meta = metadata[metadata_head++ % META_COUNT];
+				latest_decode_end_ns = decode_end;
 				++decoded;
+				if (stats.decoder_duration_count < PI_SAMPLE_COUNT && latest_meta.decoder_submit_ns)
+					stats.decoder_durations[stats.decoder_duration_count++] =
+						decode_end - latest_meta.decoder_submit_ns;
 				total_decode_ns += decode_end - decode_start;
 			}
 			if (latest_capture >= 0) {
@@ -452,6 +581,15 @@ int main(int argc, char **argv)
 				uint64_t commit_end = monotonic_ns();
 				total_commit_ns += commit_end - commit_start;
 				++presented;
+				++stats.drm_submitted;
+				if (stats.presented_count < PI_SAMPLE_COUNT && latest_meta.receive_ns) {
+					struct pi_present_sample *sample = &stats.presented[stats.presented_count++];
+					sample->receive_to_submit_ns = latest_meta.decoder_submit_ns - latest_meta.receive_ns;
+					sample->decode_ns = latest_decode_end_ns - latest_meta.decoder_submit_ns;
+					sample->decode_to_drm_ns = commit_start - latest_decode_end_ns;
+					sample->drm_submit_ns = commit_end - commit_start;
+					sample->total_ns = commit_end - latest_meta.receive_ns;
+				}
 				if (latest_meta.source_ns) {
 					int64_t relative_age = (int64_t)(commit_end - first_rx_ns) -
 						(int64_t)(latest_meta.source_ns - first_source_ns);
@@ -524,10 +662,21 @@ int main(int argc, char **argv)
 	if (metadata_head != metadata_tail)
 		fprintf(stderr, "direct end_of_stream pending_decoder_metadata=%u\n",
 			metadata_tail - metadata_head);
-	if (old_capture >= 0) {
+	report_pi_stats(&stats, frames, decoded, presented, dropped);
+	if (age_count) {
+		sort_samples(ages, age_count);
+		fprintf(stderr, "pi_frame_age metric=relative_start_offset count=%u p50_ms=%.3f "
+			"p95_ms=%.3f max_ms=%.3f\n", age_count,
+			ages[age_count / 2].value_ns / 1000000.0,
+			ages[(age_count * 95) / 100 < age_count ? (age_count * 95) / 100 : age_count - 1].value_ns / 1000000.0,
+			ages[age_count - 1].value_ns / 1000000.0);
+	}
+	if (old_capture >= 0 && !no_restore_requested()) {
 		/* Keep production's existing GUD framebuffer and mode in place. */
 		if (set_plane(drmfd, plane_id, crtc_id, 673, DISPLAY_HEIGHT) < 0)
 			perror("restore GUD plane");
+	} else if (old_capture >= 0) {
+		fprintf(stderr, "H264_RECEIVER_NO_RESTORE=1: leaving direct H.264 plane selected\n");
 	}
 	getrusage(RUSAGE_SELF, &usage);
 	if (age_count) {

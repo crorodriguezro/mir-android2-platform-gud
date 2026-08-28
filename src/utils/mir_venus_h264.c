@@ -90,6 +90,29 @@ struct ts_mux {
 struct frame_meta {
 	uint64_t sequence;
 	uint64_t source_ns;
+	uint64_t conversion_start_ns;
+	uint64_t conversion_end_ns;
+	uint64_t submit_ns;
+};
+
+#define PHONE_SAMPLE_COUNT 4096
+
+struct phone_sample {
+	uint64_t source_interval_ns;
+	uint64_t conversion_ns;
+	uint64_t encode_ns;
+	uint64_t send_ns;
+	uint64_t total_ns;
+};
+
+struct phone_stats {
+	uint64_t mir_frames;
+	uint64_t encoder_submitted;
+	uint64_t encoder_completed;
+	uint64_t transport_sent;
+	uint64_t previous_source_ns;
+	unsigned int sample_count;
+	struct phone_sample samples[PHONE_SAMPLE_COUNT];
 };
 
 typedef int ion_user_handle_t;
@@ -522,7 +545,7 @@ static int dequeue_capture(int fd, int output_fd, enum v4l2_buf_type type,
 			   uint64_t *bytes, uint64_t *access_units,
 			   size_t *maximum_access_unit, struct ts_mux *mux,
 			   struct frame_meta metadata[64], unsigned int *metadata_head,
-			   unsigned int *metadata_tail)
+			   unsigned int *metadata_tail, struct phone_stats *stats)
 {
 	for (;;) {
 		struct v4l2_plane p[NPLANE];
@@ -542,11 +565,28 @@ static int dequeue_capture(int fd, int output_fd, enum v4l2_buf_type type,
 			}
 			if (p[0].bytesused > *maximum_access_unit)
 				*maximum_access_unit = p[0].bytesused;
-			if (write_access_unit(output_fd, mux, buffers[buffer.index].ptr[0],
-				p[0].bytesused, meta.source_ns) < 0) {
+			uint64_t encode_end_ns = monotonic_ns();
+			uint64_t send_start_ns = monotonic_ns();
+			int send_result = write_access_unit(output_fd, mux,
+				buffers[buffer.index].ptr[0], p[0].bytesused, meta.source_ns);
+			uint64_t send_end_ns = monotonic_ns();
+			if (send_result < 0) {
 				perror("write H264");
 				return -1;
 			}
+			if (meta.submit_ns && stats->sample_count < PHONE_SAMPLE_COUNT) {
+				struct phone_sample *sample = &stats->samples[stats->sample_count++];
+				sample->source_interval_ns = stats->previous_source_ns &&
+					meta.source_ns > stats->previous_source_ns ?
+					meta.source_ns - stats->previous_source_ns : 0;
+				sample->conversion_ns = meta.conversion_end_ns - meta.conversion_start_ns;
+				sample->encode_ns = encode_end_ns - meta.submit_ns;
+				sample->send_ns = send_end_ns - send_start_ns;
+				sample->total_ns = send_end_ns - meta.source_ns;
+				stats->previous_source_ns = meta.source_ns;
+			}
+			++stats->encoder_completed;
+			++stats->transport_sent;
 			*bytes += p[0].bytesused;
 			++*access_units;
 		}
@@ -591,6 +631,63 @@ static int next_free(unsigned char const free_map[NBUF], unsigned int count)
 	return -1;
 }
 
+static uint64_t phone_sample_value(struct phone_sample const *sample, int metric)
+{
+	switch (metric) {
+	case 0: return sample->source_interval_ns;
+	case 1: return sample->conversion_ns;
+	case 2: return sample->encode_ns;
+	case 3: return sample->send_ns;
+	default: return sample->total_ns;
+	}
+}
+
+static void report_phone_metric(struct phone_stats const *stats, char const *name,
+	int metric)
+{
+	uint64_t values[PHONE_SAMPLE_COUNT];
+	uint64_t sum = 0, maximum = 0;
+	unsigned int i, p50, p95;
+	if (!stats->sample_count) return;
+	for (i = 0; i < stats->sample_count; ++i) {
+		values[i] = phone_sample_value(&stats->samples[i], metric);
+		sum += values[i];
+		if (values[i] > maximum) maximum = values[i];
+	}
+	for (i = 1; i < stats->sample_count; ++i) {
+		uint64_t value = values[i];
+		unsigned int j = i;
+		while (j && values[j - 1] > value) {
+			values[j] = values[j - 1];
+			--j;
+		}
+		values[j] = value;
+	}
+	p50 = stats->sample_count / 2;
+	p95 = (stats->sample_count * 95) / 100;
+	if (p95 >= stats->sample_count) p95 = stats->sample_count - 1;
+	fprintf(stderr, "phone_timing metric=%s count=%u mean_us=%.1f p50_us=%.1f "
+		"p95_us=%.1f max_us=%.1f\n", name, stats->sample_count,
+		sum / 1000.0 / stats->sample_count, values[p50] / 1000.0,
+		values[p95] / 1000.0, maximum / 1000.0);
+}
+
+static void report_phone_stats(struct phone_stats const *stats, unsigned int submitted)
+{
+	fprintf(stderr, "phone_counts mir=%llu encoder_submitted=%llu encoder_completed=%llu "
+		"transport_sent=%llu samples=%u submitted=%u\n",
+		(unsigned long long)stats->mir_frames,
+		(unsigned long long)stats->encoder_submitted,
+		(unsigned long long)stats->encoder_completed,
+		(unsigned long long)stats->transport_sent,
+		stats->sample_count, submitted);
+	report_phone_metric(stats, "mir_interval", 0);
+	report_phone_metric(stats, "rgb_to_nv12", 1);
+	report_phone_metric(stats, "venus_encode", 2);
+	report_phone_metric(stats, "transport_send", 3);
+	report_phone_metric(stats, "phone_total", 4);
+}
+
 int main(int argc, char **argv)
 {
 	char const *output_path = argc > 1 ? argv[1] : "/tmp/mir-venus.h264";
@@ -627,6 +724,7 @@ int main(int argc, char **argv)
 	uint64_t start_ns, end_ns;
 	struct frame_meta metadata[64] = {0};
 	unsigned int metadata_head = 0, metadata_tail = 0;
+	struct phone_stats phone_stats = {0};
 
 	if (!frame_limit || !width || !height || !capture_width || !capture_height ||
 	    target_fps > 240 ||
@@ -758,7 +856,7 @@ int main(int argc, char **argv)
 			if (poll(&poll_fd, 1, 2000) <= 0) { perror("poll waiting for output"); goto done; }
 		if (dequeue_capture(encoder_fd, output_fd, capture_type, capture,
 				capture_planes, &bytes, &access_units, &maximum_access_unit,
-				&mux, metadata, &metadata_head, &metadata_tail) < 0 ||
+				&mux, metadata, &metadata_head, &metadata_tail, &phone_stats) < 0 ||
 			    dequeue_output(encoder_fd, output_type, output, output_free, &in_flight) < 0)
 				goto done;
 		}
@@ -768,7 +866,7 @@ int main(int argc, char **argv)
 			struct v4l2_buffer buffer = {.type = output_type,
 				.memory = V4L2_MEMORY_USERPTR, .index = (unsigned int)free_index,
 				.length = output[free_index].planes, .m.planes = p};
-			uint64_t source_ns, copy_start, swap_start;
+			uint64_t source_ns, copy_start, conversion_end, submit_ns, swap_start;
 			mir.buffer_stream_get_graphics_region(stream, &region);
 			source_ns = monotonic_ns();
 			if (!region.vaddr || region.width != (int)width || region.height != (int)height ||
@@ -792,12 +890,14 @@ int main(int argc, char **argv)
 			mir_abgr_to_nv12(&output[free_index], &region, width, height,
 				format.fmt.pix_mp.plane_fmt[0].bytesperline ?: width,
 				height);
-			copy_ns += monotonic_ns() - copy_start;
+			conversion_end = monotonic_ns();
+			copy_ns += conversion_end - copy_start;
 			prepare_planes(&output[free_index], p);
 			p[0].bytesused = output_sizes[0];
 			buffer.timestamp.tv_sec = submitted / target_fps;
 			buffer.timestamp.tv_usec =
 				(submitted % target_fps) * (1000000U / target_fps);
+			submit_ns = monotonic_ns();
 			if (xioctl(encoder_fd, VIDIOC_QBUF, &buffer) < 0) { perror("QBUF output"); goto done; }
 			if (metadata_tail - metadata_head >= 64) {
 				fprintf(stderr, "frame metadata queue overflow\n");
@@ -805,18 +905,23 @@ int main(int argc, char **argv)
 			}
 			metadata[metadata_tail % 64].sequence = submitted;
 			metadata[metadata_tail % 64].source_ns = source_ns;
+			metadata[metadata_tail % 64].conversion_start_ns = copy_start;
+			metadata[metadata_tail % 64].conversion_end_ns = conversion_end;
+			metadata[metadata_tail % 64].submit_ns = submit_ns;
 			++metadata_tail;
 			output_free[free_index] = 0;
 			++in_flight;
 			if (in_flight > max_in_flight) max_in_flight = in_flight;
 			++submitted;
+			++phone_stats.mir_frames;
+			++phone_stats.encoder_submitted;
 			swap_start = monotonic_ns();
 			mir.buffer_stream_swap_buffers_sync(stream);
 			swap_ns += monotonic_ns() - swap_start;
 		}
 			if (dequeue_capture(encoder_fd, output_fd, capture_type, capture,
 				capture_planes, &bytes, &access_units, &maximum_access_unit,
-				&mux, metadata, &metadata_head, &metadata_tail) < 0 ||
+				&mux, metadata, &metadata_head, &metadata_tail, &phone_stats) < 0 ||
 		    dequeue_output(encoder_fd, output_type, output, output_free, &in_flight) < 0)
 			goto done;
 	}
@@ -825,7 +930,7 @@ int main(int argc, char **argv)
 		if (poll(&poll_fd, 1, 2000) <= 0) { perror("poll drain"); goto done; }
 		if (dequeue_capture(encoder_fd, output_fd, capture_type, capture,
 			capture_planes, &bytes, &access_units, &maximum_access_unit,
-			&mux, metadata, &metadata_head, &metadata_tail) < 0 ||
+			&mux, metadata, &metadata_head, &metadata_tail, &phone_stats) < 0 ||
 		    dequeue_output(encoder_fd, output_type, output, output_free, &in_flight) < 0)
 			goto done;
 	}
@@ -835,7 +940,7 @@ int main(int argc, char **argv)
 		if (poll(&poll_fd, 1, 100) < 0 && errno != EINTR) { perror("poll capture drain"); goto done; }
 		if (dequeue_capture(encoder_fd, output_fd, capture_type, capture,
 			capture_planes, &bytes, &access_units, &maximum_access_unit,
-			&mux, metadata, &metadata_head, &metadata_tail) < 0) goto done;
+			&mux, metadata, &metadata_head, &metadata_tail, &phone_stats) < 0) goto done;
 	}
 	end_ns = monotonic_ns();
 	{
@@ -847,6 +952,7 @@ int main(int argc, char **argv)
 			submitted / seconds, bytes * 8.0 / 1000000.0 / seconds, maximum_access_unit,
 			copy_ns / 1000000.0 / submitted, swap_ns / 1000000.0 / submitted,
 			max_in_flight, access_units == submitted ? "true" : "false");
+		report_phone_stats(&phone_stats, submitted);
 	}
 	result = access_units == submitted ? EXIT_SUCCESS : EXIT_FAILURE;
 

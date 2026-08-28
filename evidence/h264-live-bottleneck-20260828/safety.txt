@@ -1,0 +1,12 @@
+Run 1 Pi temperature sample=47.2 C; throttled=0x0
+Run 2 Pi temperature sample=47.2 C; throttled=0x0
+Run 3 Pi midpoint temperature sample=46.2 C; throttled=0x0
+Post-run Pi temperature sample=45.1 C; throttled=0x0
+Pi GUD service after benchmark=active
+Pi xdisp.service after benchmark=inactive
+Phone xdisp.service after benchmark=inactive
+Phone USB host mode after benchmark=host
+GUD owner after benchmark=PID 583, unchanged
+No GUD restoration or framebuffer-673 restore was performed by the receiver.
+No decoder input drops, missing decoder completions, transport drops, or frame-limit errors were observed in valid runs.
+One failed preliminary Run 3 launch was stopped before measurement because an unprivileged receiver could not duplicate the root GUD DRM fd; it was retried under the approved Pi sudo account and is excluded from results.
