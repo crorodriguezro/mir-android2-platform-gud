@@ -1,0 +1,23 @@
+direct receiver active: decoded NV12 DMABUF -> DRM PRIME NV12 -> VC4 1920x1080
+capture[0..5]: six DMABUF exports, six DRM framebuffer imports succeeded
+drm property COLOR_ENCODING_BT709=1 accepted
+drm property COLOR_RANGE_LIMITED=0 accepted
+direct frames received=60 decoded=60 presented=60 dropped=0
+relative_age_ms_p50=213.460 relative_age_ms_p95=430.148
+decode_us_avg=5.6 commit_us_avg=8540.5 cpu_user_ms=3.7 cpu_sys_ms=74.6
+Note: this result is from the pre-latest-frame policy and is retained as
+physical evidence of the direct presentation route and its measured backlog.
+
+latest-frame burst run (port 5513, current receiver):
+direct frames received=30 decoded=0 presented=0 dropped=0 input_queue=30 metadata_queue=30
+direct result received=30 decoded=30 presented=28 dropped=0
+relative_age_ms_p50=-204.857 relative_age_ms_p95=28.506
+The burst timestamps make the relative-age median non-physical; this run is
+used only to verify newest-frame selection and bounded EOF drain.
+
+paced run (port 5514, current receiver, phone source paced at 30 FPS):
+The phone sender completed, but the Pi rebooted while the receiver owned the
+decoder/DRM resources before its log could be persisted. After reboot:
+gud-userspace.service=active, UDC= configured, GUD owner restored, phone
+1d50:614d device present at 480 Mb/s, phone /dev/dri/card1 present, and VC4
+plane 84 was again active with framebuffer 673.

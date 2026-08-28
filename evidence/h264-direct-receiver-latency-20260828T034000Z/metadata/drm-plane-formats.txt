@@ -1,0 +1,11 @@
+Pi VC4 modetest enumeration
+
+Active GUD primary plane: id 84, CRTC 95, framebuffer 673.
+Plane formats include XR24 AR24 AB24 XB24 RG16 BG16 AR15 XR15 RG24 BG24
+YU12 YV12 NV12 NV21 NV16 NV61 and other RGB formats.
+NV12 modifiers include linear and Broadcom SAND variants.
+Plane properties include COLOR_ENCODING and COLOR_RANGE.
+Direct run set:
+COLOR_ENCODING property 89 = 1 (BT.709 YCbCr)
+COLOR_RANGE property 90 = 0 (limited)
+DRM PRIME import and ADDFB2 succeeded for six linear NV12 capture buffers.

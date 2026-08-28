@@ -1,0 +1,14 @@
+Build commands:
+
+aarch64-redhat-linux-gcc -O2 -Wall -Wextra -Werror -o /tmp/h264-direct-drm-receiver-aarch64 src/utils/h264_direct_drm_receiver.c
+aarch64-redhat-linux-gcc -O2 -Wall -Wextra -Werror -o /tmp/mir-venus-h264-framed src/utils/mir_venus_h264.c -ldl
+
+Final local binary hashes during the direct test:
+
+9a4c904ba18380e1b021f83a63acf0c92f005651e017600946127dea00d41261  h264-direct-drm-receiver-aarch64
+5559791d4ec40a489132575fcfef56ebbfb3dd9e928d1d7e57bd96b148c738e4  mir-venus-h264-framed
+
+Final direct receiver source hash:
+4d88726c2fd4ed39b272b4da982fde469247e7bde3203f34391a9b9b9071194e
+Final direct receiver build hash:
+9a4c904ba18380e1b021f83a63acf0c92f005651e017600946127dea00d41261.

@@ -69,3 +69,26 @@ receiver must apply BT.709 limited-range interpretation explicitly (for
 example with FFmpeg's `h264_metadata` bitstream filter).
 
 See the timestamped evidence report for measurements and remaining work.
+
+## Direct Pi receiver experiment
+
+`src/utils/h264_direct_drm_receiver.c` is the dedicated receiver experiment
+used on the Pi. It opens `/dev/video10` (`bcm2835-codec-decode`), configures
+H.264 input and 1920x1088 linear NV12 capture, requests four MMAP decoder input
+buffers and six capture buffers, exports the capture buffers with
+`VIDIOC_EXPBUF`, imports them with DRM PRIME, and presents them on VC4 plane
+84 at 1920x1080 with `COLOR_ENCODING=BT.709` and limited range. No FFmpeg,
+VLC, libswscale, CPU YUV conversion, or media playback queue is involved.
+
+The Pi accepted six 3,133,440-byte NV12 DMABUFs and created DRM framebuffers
+for all six. The first receiver implementation presented 60/60 frames, but
+its per-frame plane commits averaged 8.54 ms and the measured relative frame
+age grew to p50 213 ms and p95 430 ms because it presented every decoded
+frame in a burst. A latest-frame drain policy was then implemented. A
+30-access-unit burst run decoded all 30 and presented 28, confirming that
+completed decoder output can be collapsed to the newest frame. A paced 30-FPS
+run caused the Pi to reboot while the direct receiver owned the V4L2/DRM
+resources, so no valid paced latency distribution was collected. The direct
+path therefore proves the low-copy format/import route, not yet the
+interactive latency gate; H.264 remains experimental until receiver drain and
+cleanup are made robust.

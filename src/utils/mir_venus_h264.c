@@ -78,11 +78,17 @@ struct mapped_buffer {
 
 struct ts_mux {
 	int enabled;
+	int framed;
 	unsigned int fps;
 	uint8_t pat_continuity;
 	uint8_t pmt_continuity;
 	uint8_t video_continuity;
 	uint64_t access_unit;
+};
+
+struct frame_meta {
+	uint64_t sequence;
+	uint64_t source_ns;
 };
 
 typedef int ion_user_handle_t;
@@ -319,6 +325,37 @@ static void encode_pcr(uint8_t destination[6], uint64_t base)
 	destination[5] = 0;
 }
 
+static void put_be32(uint8_t *destination, uint32_t value)
+{
+	destination[0] = (uint8_t)(value >> 24);
+	destination[1] = (uint8_t)(value >> 16);
+	destination[2] = (uint8_t)(value >> 8);
+	destination[3] = (uint8_t)value;
+}
+
+static void put_be64(uint8_t *destination, uint64_t value)
+{
+	put_be32(destination, (uint32_t)(value >> 32));
+	put_be32(destination + 4, (uint32_t)value);
+}
+
+static int framed_write_access_unit(int fd, struct ts_mux *mux,
+					uint8_t const *access_unit, size_t length,
+					uint64_t source_ns)
+{
+	uint8_t header[32] = {0};
+	memcpy(header, "MH264FRM", 8);
+	header[8] = 1;
+	put_be64(header + 12, mux->access_unit);
+	put_be64(header + 20, source_ns);
+	put_be32(header + 28, (uint32_t)length);
+	if (write_full(fd, header, sizeof(header)) < 0 ||
+		write_full(fd, access_unit, length) < 0)
+		return -1;
+	++mux->access_unit;
+	return 0;
+}
+
 static int ts_write_access_unit(int fd, struct ts_mux *mux,
 				uint8_t const *access_unit, size_t access_unit_length)
 {
@@ -378,10 +415,12 @@ static int ts_write_access_unit(int fd, struct ts_mux *mux,
 }
 
 static int write_access_unit(int fd, struct ts_mux *mux,
-			     void const *data, size_t length)
+				     void const *data, size_t length, uint64_t source_ns)
 {
 	if (mux->enabled)
 		return ts_write_access_unit(fd, mux, data, length);
+	if (mux->framed)
+		return framed_write_access_unit(fd, mux, data, length, source_ns);
 	++mux->access_unit;
 	return write_full(fd, data, length);
 }
@@ -479,7 +518,9 @@ static void prepare_planes(struct mapped_buffer *mapped,
 static int dequeue_capture(int fd, int output_fd, enum v4l2_buf_type type,
 			   struct mapped_buffer buffers[NBUF], unsigned int planes,
 			   uint64_t *bytes, uint64_t *access_units,
-			   size_t *maximum_access_unit, struct ts_mux *mux)
+			   size_t *maximum_access_unit, struct ts_mux *mux,
+			   struct frame_meta metadata[64], unsigned int *metadata_head,
+			   unsigned int *metadata_tail)
 {
 	for (;;) {
 		struct v4l2_plane p[NPLANE];
@@ -492,10 +533,15 @@ static int dequeue_capture(int fd, int output_fd, enum v4l2_buf_type type,
 			return -1;
 		}
 		if (p[0].bytesused) {
+			struct frame_meta meta = {0};
+			if (*metadata_head != *metadata_tail) {
+				meta = metadata[*metadata_head % 64];
+				++*metadata_head;
+			}
 			if (p[0].bytesused > *maximum_access_unit)
 				*maximum_access_unit = p[0].bytesused;
 			if (write_access_unit(output_fd, mux, buffers[buffer.index].ptr[0],
-				p[0].bytesused) < 0) {
+				p[0].bytesused, meta.source_ns) < 0) {
 				perror("write H264");
 				return -1;
 			}
@@ -577,14 +623,18 @@ int main(int argc, char **argv)
 	uint64_t bytes = 0, access_units = 0, copy_ns = 0, swap_ns = 0;
 	size_t maximum_access_unit = 0;
 	uint64_t start_ns, end_ns;
+	struct frame_meta metadata[64] = {0};
+	unsigned int metadata_head = 0, metadata_tail = 0;
 
 	if (!frame_limit || !width || !height || !capture_width || !capture_height ||
 	    target_fps > 240 ||
-	    (strcmp(transport, "annexb") && strcmp(transport, "mpegts")) || !bitrate) {
-		fprintf(stderr, "usage: %s [output|-] [frames] [width] [height] [capture-left] [fps] [annexb|mpegts] [bitrate] [capture-width] [capture-height]\n", argv[0]);
+	    (strcmp(transport, "annexb") && strcmp(transport, "mpegts") &&
+	     strcmp(transport, "framed")) || !bitrate) {
+		fprintf(stderr, "usage: %s [output|-] [frames] [width] [height] [capture-left] [fps] [annexb|mpegts|framed] [bitrate] [capture-width] [capture-height]\n", argv[0]);
 		return EXIT_FAILURE;
 	}
 	mux.enabled = !strcmp(transport, "mpegts");
+	mux.framed = !strcmp(transport, "framed");
 	mux.fps = target_fps;
 	signal(SIGINT, stop_handler);
 	signal(SIGTERM, stop_handler);
@@ -699,7 +749,7 @@ int main(int argc, char **argv)
 			if (poll(&poll_fd, 1, 2000) <= 0) { perror("poll waiting for output"); goto done; }
 		if (dequeue_capture(encoder_fd, output_fd, capture_type, capture,
 				capture_planes, &bytes, &access_units, &maximum_access_unit,
-				&mux) < 0 ||
+				&mux, metadata, &metadata_head, &metadata_tail) < 0 ||
 			    dequeue_output(encoder_fd, output_type, output, output_free, &in_flight) < 0)
 				goto done;
 		}
@@ -709,8 +759,9 @@ int main(int argc, char **argv)
 			struct v4l2_buffer buffer = {.type = output_type,
 				.memory = V4L2_MEMORY_USERPTR, .index = (unsigned int)free_index,
 				.length = output[free_index].planes, .m.planes = p};
-			uint64_t copy_start, swap_start;
+			uint64_t source_ns, copy_start, swap_start;
 			mir.buffer_stream_get_graphics_region(stream, &region);
+			source_ns = monotonic_ns();
 			if (!region.vaddr || region.width != (int)width || region.height != (int)height ||
 			    region.stride < (int)(width * 4) || region.pixel_format != 1) {
 				fprintf(stderr, "unexpected Mir region %dx%d stride=%d format=%d ptr=%p\n",
@@ -739,6 +790,13 @@ int main(int argc, char **argv)
 			buffer.timestamp.tv_usec =
 				(submitted % target_fps) * (1000000U / target_fps);
 			if (xioctl(encoder_fd, VIDIOC_QBUF, &buffer) < 0) { perror("QBUF output"); goto done; }
+			if (metadata_tail - metadata_head >= 64) {
+				fprintf(stderr, "frame metadata queue overflow\n");
+				goto done;
+			}
+			metadata[metadata_tail % 64].sequence = submitted;
+			metadata[metadata_tail % 64].source_ns = source_ns;
+			++metadata_tail;
 			output_free[free_index] = 0;
 			++in_flight;
 			if (in_flight > max_in_flight) max_in_flight = in_flight;
@@ -749,7 +807,7 @@ int main(int argc, char **argv)
 		}
 			if (dequeue_capture(encoder_fd, output_fd, capture_type, capture,
 				capture_planes, &bytes, &access_units, &maximum_access_unit,
-				&mux) < 0 ||
+				&mux, metadata, &metadata_head, &metadata_tail) < 0 ||
 		    dequeue_output(encoder_fd, output_type, output, output_free, &in_flight) < 0)
 			goto done;
 	}
@@ -758,7 +816,7 @@ int main(int argc, char **argv)
 		if (poll(&poll_fd, 1, 2000) <= 0) { perror("poll drain"); goto done; }
 		if (dequeue_capture(encoder_fd, output_fd, capture_type, capture,
 			capture_planes, &bytes, &access_units, &maximum_access_unit,
-			&mux) < 0 ||
+			&mux, metadata, &metadata_head, &metadata_tail) < 0 ||
 		    dequeue_output(encoder_fd, output_type, output, output_free, &in_flight) < 0)
 			goto done;
 	}
@@ -768,7 +826,7 @@ int main(int argc, char **argv)
 		if (poll(&poll_fd, 1, 100) < 0 && errno != EINTR) { perror("poll capture drain"); goto done; }
 		if (dequeue_capture(encoder_fd, output_fd, capture_type, capture,
 			capture_planes, &bytes, &access_units, &maximum_access_unit,
-			&mux) < 0) goto done;
+			&mux, metadata, &metadata_head, &metadata_tail) < 0) goto done;
 	}
 	end_ns = monotonic_ns();
 	{

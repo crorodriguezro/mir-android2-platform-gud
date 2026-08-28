@@ -1,0 +1,13 @@
+Pi hardware enumeration
+
+/dev/video10: bcm2835-codec-decode, Video Memory-to-Memory Multiplanar
+
+Capture formats:
+YU12, YV12, NV12, NV21, NC12, RGBP, AB24, BGR4
+1920x1088 accepted for requested 1920x1080 decode.
+
+Direct run:
+output 1920x1080 H264, one plane, sizeimage 2097152
+capture 1920x1088 NV12, one plane, bytesperline 1920, sizeimage 3133440
+capture colorspace/encoding/quantization initially reported default values;
+DRM plane was explicitly set to BT.709 limited range.

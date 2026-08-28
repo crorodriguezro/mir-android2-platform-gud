@@ -1,0 +1,20 @@
+Post-test production restoration (2026-08-28):
+
+Phone:
+  USB controller mode: host
+  GUD device: /sys/bus/usb/devices/1-1.3
+  VID:PID: 1d50:614d
+  negotiated speed: 480 Mb/s
+  DRM device: /dev/dri/card1 present
+
+Pi:
+  gud-userspace.service: active
+  UDC 3f980000.usb: configured
+  GUD owner: /home/cristian/gud-drm-e4-t03-cdf83d37 /dev/dri/card0
+  VC4 active plane: 84, CRTC: 95, framebuffer: 673
+
+Bounded production smoke check:
+  /home/phablet/gud-kms-fill /dev/dri/card1
+  return code: 124 (intentional timeout)
+  phone dmesg contained fresh gud_xdisp_full_update frame records with
+  format=rgb565, source=1843200, and compressed payloads.
