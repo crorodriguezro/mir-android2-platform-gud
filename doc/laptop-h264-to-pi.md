@@ -62,3 +62,17 @@ from turning decoder throughput variation into growing interaction latency.
 The x264 VUI is deliberately omitted: the Pi's `/dev/video10` decoder rejected
 the otherwise valid timing VUI with `EPIPE`; color interpretation is already
 set explicitly to limited-range BT.709 by the direct DRM receiver.
+
+## Archived diagnostic sinks
+
+The final useful Pi path is `h264-direct-drm-receiver`, which imports decoder
+capture buffers for direct NV12 DRM scanout. Two earlier, deliberately small
+diagnostics remain in `src/utils/` for reproducibility:
+
+- `fb_frame_sink.c` copies raw RGB565 frames into a legacy Linux framebuffer;
+- `proc_mem_frame_sink.c` writes raw RGB565 frames into two known dumb-buffer
+  mappings owned by another process.
+
+Neither diagnostic represents the selected receiver. They establish why a
+CPU RGB565 copy path was useful for isolation but unsuitable as the final
+low-latency architecture.

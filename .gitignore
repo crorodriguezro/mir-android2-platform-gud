@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+
+# Local codec/frame captures are reproducible benchmark products, not source.
+*.h264
+*.raw
+*.yuv
