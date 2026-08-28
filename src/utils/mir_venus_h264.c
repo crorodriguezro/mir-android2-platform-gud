@@ -61,6 +61,7 @@ struct mir_api {
 	void (*spec_set_pixel_format)(MirScreencastSpec *, int);
 	void (*spec_set_capture_region)(MirScreencastSpec *, MirRectangle const *);
 	void (*spec_set_number_of_buffers)(MirScreencastSpec *, unsigned int);
+	void (*spec_set_mirror_mode)(MirScreencastSpec *, int);
 	MirScreencast *(*screencast_create_sync)(MirScreencastSpec *);
 	void (*screencast_spec_release)(MirScreencastSpec *);
 	MirBufferStream *(*screencast_get_buffer_stream)(MirScreencast *);
@@ -493,6 +494,7 @@ static int load_mir(struct mir_api *api)
 	LOAD(spec_set_pixel_format, "mir_screencast_spec_set_pixel_format");
 	LOAD(spec_set_capture_region, "mir_screencast_spec_set_capture_region");
 	LOAD(spec_set_number_of_buffers, "mir_screencast_spec_set_number_of_buffers");
+	LOAD(spec_set_mirror_mode, "mir_screencast_spec_set_mirror_mode");
 	LOAD(screencast_create_sync, "mir_screencast_create_sync");
 	LOAD(screencast_spec_release, "mir_screencast_spec_release");
 	LOAD(screencast_get_buffer_stream, "mir_screencast_get_buffer_stream");
@@ -651,7 +653,14 @@ int main(int argc, char **argv)
 	mir.spec_set_height(spec, height);
 	mir.spec_set_pixel_format(spec, 1); /* mir_pixel_format_abgr_8888 */
 	mir.spec_set_capture_region(spec, &rectangle);
-	mir.spec_set_number_of_buffers(spec, 3);
+	/*
+	 * This is the Mir external-output contract used by mirgud.  Keep it on the
+	 * standalone encoder too, so it requests the same virtual-output surface
+	 * when it is used as the H.264 replacement child.
+	 * mir_mirror_mode_vertical is 1 in the legacy Mir client ABI.
+	 */
+	mir.spec_set_mirror_mode(spec, 1);
+	mir.spec_set_number_of_buffers(spec, 2);
 	screencast = mir.screencast_create_sync(spec);
 	mir.screencast_spec_release(spec);
 	spec = NULL;
