@@ -1,0 +1,13 @@
+[Unit]
+Description=Pi direct H.264 decoder and DRM display receiver
+After=network.target gud-userspace.service
+Requires=gud-userspace.service
+
+[Service]
+Type=simple
+ExecStart=/bin/sh -c 'exec /home/cristian/h264-direct-drm-receiver-opt 5505 "$$(systemctl show --property=MainPID --value gud-userspace.service)" 3 84 95 4294967295'
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=multi-user.target

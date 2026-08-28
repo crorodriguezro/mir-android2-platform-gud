@@ -1,0 +1,15 @@
+[Unit]
+Description=KDE virtual monitor to Pi H.264 display
+After=graphical-session.target network-online.target
+Wants=network-online.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/cristianr/Projects/linux-mobile/mir-android2-platform-gud
+ExecStart=/usr/bin/python3 /home/cristianr/Projects/linux-mobile/mir-android2-platform-gud/src/utils/laptop_h264_sender.py
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target
