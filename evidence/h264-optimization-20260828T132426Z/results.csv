@@ -1,0 +1,10 @@
+variant,source_fps,encoder_fps,receive_fps,decode_fps,presentation_fps,conversion_p50_ms,conversion_p95_ms,venus_p50_ms,venus_p95_ms,encoder_wait_p50_ms,encoder_wait_p95_ms,decode_p50_ms,decode_p95_ms,drm_submit_p50_ms,drm_submit_p95_ms,decoded_replacement_percent,phone_cpu,pi_cpu,frame_age_p50,frame_age_p95
+baseline_run1,24.82,24.82,24.82,24.81,18.70,32.692,33.932,85.879,90.109,NA,NA,46.925,163.564,8.744,16.322,24.667,NA,NA,34.635,304.537
+baseline_run2,25.05,25.05,25.05,25.04,18.65,32.566,33.883,85.140,89.562,NA,NA,47.762,149.517,8.877,16.423,25.538,"87.6% one-core; 17.1% aggregate",NA,124.840,355.273
+baseline_run3,25.68,25.68,25.68,25.68,22.05,32.163,32.506,83.337,85.166,NA,NA,41.204,85.026,8.346,16.031,14.154,NA,NA,52.810,106.125
+scalar_converter_micro,29.42,NA,NA,NA,NA,12.758,17.622,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA
+neon_converter_micro,29.70,NA,NA,NA,NA,3.957,8.730,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA
+new_presenter_exploration,29.87,29.87,29.87,29.87,28.87,NA,NA,NA,NA,NA,NA,54.189,177.548,13.064,16.614,3.333,NA,NA,99.404,343.609
+combined_best_run1,29.982,29.982,29.982,29.982,29.039,27.824,44.252,46.489,68.895,0,0,29.731,124.761,12.106,16.611,3.143,"71.70% one-core; 21.37% aggregate proxy",2.150% one-core,98.078,452.886
+combined_best_run2,29.978,29.978,29.978,29.978,29.821,28.335,43.406,46.799,67.951,0,0,25.968,73.613,10.439,16.599,0.524,"71.70% one-core; 21.37% aggregate proxy",2.249% one-core,44.152,174.367
+combined_best_run3,29.975,29.975,29.975,29.975,29.461,26.911,42.771,46.773,65.317,0,0,28.387,113.713,11.061,16.607,1.714,"71.70% one-core; 21.37% aggregate proxy",2.268% one-core,204.971,422.364

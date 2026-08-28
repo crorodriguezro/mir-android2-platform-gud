@@ -1,0 +1,31 @@
+H.264 optimization safety and latency invariants, 2026-08-28 UTC
+
+PHONE
+- Four preallocated/reused ION/Venus input buffers; no per-frame multi-megabyte allocation.
+- Encoder in-flight is bounded by those four buffers. Observed maximum occupancy was 3-4 and encoder-buffer waits were zero in all three combined runs.
+- Completion DQ and TCP send run independently from capture/conversion/QBUF; stop broadcasts, joins, drains, and verifies equal submitted/completed/sent counters.
+- No source FIFO was introduced. Source pending replacements remained zero because capture/conversion remains a single freshness point.
+
+PI
+- LatestDecodedFramePresenter bounds are exactly one in-flight plus one newest pending decoded frame.
+- A new decoded frame submits immediately when idle; only an already occupied pending slot is replaced.
+- The decoder buffer remains owned until its DRM SETPLANE worker returns, then it is requeued. There is no decoder or presentation FIFO growth.
+- Combined max_presentation_in_flight=1 and max_presentation_pending=1 on every run.
+- Receiver socket and decoder readiness share one poll loop, preventing the old blocking-read decode burst.
+
+RETENTION / THERMALS
+- Combined runs retained 2100/2100 transport frames and 2100/2100 decoder completions; no network or decoder loss.
+- Pi was 45.1-46.2 C with get_throttled=0x0; Pi receiver CPU was 2.15-2.27% of one core.
+- Phone CPU qualification observed 44.6 C. Governors/frequencies were not changed.
+- xdisp.service stayed inactive throughout; GUD was not restored by the H.264 receiver.
+
+DRM RESOURCE CLEANUP
+- Receiver teardown disables the H.264 plane, removes each imported framebuffer, GEM_CLOSEs each exact imported handle, then closes each DMA-BUF.
+- Old pre-fix receiver runs had retained shared DRM handles. After qualification the existing gud-userspace service was restarted once to release those old handles; CMA recovered to 227828 kB.
+- Post-fix 30-frame regression ended with no framebuffer allocated by h264, only fbcon/GUD owners, gud-userspace active, and CmaFree=204124 kB.
+- No broad or guessed DRM-handle close was performed.
+
+LATENCY INTERPRETATION
+- Relative frame age compares independent phone/Pi monotonic start offsets. It is a useful queue/jitter proxy, not synchronized input-to-photon latency.
+- SETPLANE return is the measured presentation-worker completion; no page-flip/vblank completion timestamp or physical scanout timestamp is available.
+- The one-in-flight/one-pending invariant prevents unbounded latency accumulation even when decoder completion is bursty.

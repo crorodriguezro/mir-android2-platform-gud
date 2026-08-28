@@ -1,0 +1,38 @@
+H.264 optimization correctness record, 2026-08-28 UTC
+
+FORMAT AUDITS
+- Public Mir screencast audit exercised requested format IDs 1-7 at 1920x1080 and checked returned format, dimensions, stride, and buffer metadata.
+- Venus audit enumerated the real OUTPUT queue and attempted TRY_FMT and S_FMT for every enumerated and relevant RGB candidate.
+
+DIRECT RGB REJECTION
+- Live Mir -> Venus RGB4 produced green/corrupt output.
+- Four deterministic RGB4 trials supplied exact ABGR, XBGR, ARGB, and XRGB byte layouts with asymmetric colors/geometry.
+- All four decoded images were incorrect and had the same SHA-256 prefix c511da; changing R/B and A/X layout did not fix it.
+- Therefore direct RGB is rejected even though Venus accepts S_FMT and STREAMON.
+
+NV12 CONVERTER
+- test_h264_rgb_to_nv12: PASS.
+- Optimized output matches the scalar reference exactly for nontrivial source/destination strides, vector tails, vertical flip, and guard bytes.
+- AArch64 hardware test on the Pi: PASS; scalar and NEON outputs exact, guards intact.
+- Both implementations retain the same BT.709 limited-range coefficients and NV12 Cb/Cr ordering.
+
+DECODED COLOR SAMPLE (NV12 PRODUCTION PATH)
+- black=(0,0,0), white=(255,255,253), gray=(128,128,128)
+- red=(233,0,2), green=(19,255,6), blue=(3,0,244)
+- cyan=(21,255,250), magenta=(236,0,246), yellow=(252,255,8)
+- Decoded PNG SHA-256 prefix: ef981793.
+- No R/B swap, green/magenta cast, stride shear, or new orientation regression observed.
+- The pre-existing upper-region crop/orientation issue remains and was present in pre-optimization evidence; it is not attributed to this converter.
+
+PRESENTER
+- test_h264_latest_presenter_state: PASS.
+- Covers idle submit, in-flight pending, pending replacement, completion-to-pending, completion-to-idle, shutdown, bounds, and displayed decoder-buffer lifetime.
+
+BUILD CHECKS
+- Sender, receiver, both audit utilities, and both unit tests compile with gcc -O3 -Wall -Wextra -Werror.
+- Both unit tests pass under AddressSanitizer and UndefinedBehaviorSanitizer (leak detection disabled because the sandbox is ptraced).
+- git diff --check: PASS.
+
+HARDWARE INTEGRATION
+- Three 2100-frame combined runs: phone submitted/completed/sent all 2100; Pi received/submitted/decoded all 2100.
+- Final teardown regression: 30 received, 30 decoded, 30 presented, 0 pending replacements; clean stop/join.
