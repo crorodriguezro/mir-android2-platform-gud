@@ -114,7 +114,7 @@ class LaptopH264Sender:
             rfbsrc name=capture host=127.0.0.1 port={s.rfb_port}
                 view-only=true shared=true do-timestamp=true incremental=true
             ! queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream
-            ! videorate drop-only=true
+            ! videorate drop-only=false
             ! video/x-raw,width={s.width},height={s.height},framerate={s.fps}/1
             ! videoconvert n-threads={s.encoder_threads}
             ! video/x-raw,format=I420

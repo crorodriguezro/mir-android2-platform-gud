@@ -16,6 +16,11 @@ KWin extended output -> krfb loopback -> GStreamer x264 -> MH264FRM/TCP
 RFB traffic stays on laptop loopback; only framed H.264 crosses Wi-Fi. Closing
 the sender removes the virtual monitor.
 
+`videorate` repeats the newest RFB image when KDE reports no new damage, so the
+encoder and Pi receive a continuous 30 FPS timeline. Repeated frames do not
+invent motion that was absent from the RFB capture, but they make transport and
+decoder cadence independent of desktop damage frequency.
+
 ## Run
 
 Start `h264-direct-drm-receiver` on the Pi on TCP port 5505, then run from the
