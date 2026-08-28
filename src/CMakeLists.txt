@@ -23,8 +23,20 @@ install(PROGRAMS ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/mirgud.bin
 
 # Hardware POC utility. It intentionally has no build-time Mir dependency: the
 # target's legacy client ABI is resolved from libmirclient.so.9 at runtime.
-add_executable(mir-venus-h264 src/utils/mir_venus_h264.c)
+add_executable(mir-venus-h264
+  src/utils/mir_venus_h264.c
+  src/utils/h264_rgb_to_nv12.c)
 target_link_libraries(mir-venus-h264 ${CMAKE_DL_LIBS})
+target_link_libraries(mir-venus-h264 pthread)
+add_executable(mir-format-audit src/utils/mir_format_audit.c)
+target_link_libraries(mir-format-audit ${CMAKE_DL_LIBS})
+add_executable(venus-format-audit src/utils/venus_format_audit.c)
+add_executable(h264-direct-drm-receiver
+  src/utils/h264_direct_drm_receiver.c
+  src/utils/h264_latest_presenter_state.c)
+target_include_directories(h264-direct-drm-receiver PRIVATE SYSTEM ${DRM_INCLUDE_DIRS})
+target_link_libraries(h264-direct-drm-receiver
+  ${DRM_LDFLAGS} ${DRM_LIBRARIES} pthread)
 
 # Receiver-side POC shim for distro FFmpeg builds that request a compressed
 # V4L2 H.264 buffer smaller than a Venus keyframe.  This changes only H.264

@@ -11,6 +11,7 @@
 #include <fcntl.h>
 #include <linux/videodev2.h>
 #include <poll.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -18,8 +19,11 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/resource.h>
 #include <time.h>
 #include <unistd.h>
+
+#include "h264_rgb_to_nv12.h"
 
 #define NBUF 4
 #define NPLANE VIDEO_MAX_PLANES
@@ -113,6 +117,9 @@ struct phone_stats {
 	uint64_t previous_source_ns;
 	unsigned int sample_count;
 	struct phone_sample samples[PHONE_SAMPLE_COUNT];
+	unsigned int encoder_wait_count;
+	uint64_t encoder_wait_ns[PHONE_SAMPLE_COUNT];
+	uint64_t source_pending_replacements;
 };
 
 typedef int ion_user_handle_t;
@@ -142,60 +149,6 @@ static uint64_t monotonic_ns(void)
 	return (uint64_t)value.tv_sec * 1000000000ULL + value.tv_nsec;
 }
 
-static uint8_t clamp8(int value)
-{
-	return value < 0 ? 0 : value > 255 ? 255 : (uint8_t)value;
-}
-
-static void mir_abgr_to_nv12(struct mapped_buffer *buffer,
-	MirGraphicsRegion const *region, unsigned int width, unsigned int height,
-	unsigned int y_stride, unsigned int y_scanlines)
-{
-	uint8_t *y_plane = buffer->ptr[0];
-	uint8_t *uv_plane = buffer->planes > 1 ? buffer->ptr[1] :
-		y_plane + (size_t)y_stride * y_scanlines;
-	unsigned int x, y;
-
-	memset(y_plane, 16, buffer->len[0]);
-	if (buffer->planes > 1)
-		memset(uv_plane, 128, buffer->len[1]);
-	else
-		memset(uv_plane, 128, buffer->len[0] - (size_t)y_stride * y_scanlines);
-	for (y = 0; y < height; ++y) {
-		uint8_t const *source = (uint8_t const *)region->vaddr +
-			(size_t)(height - 1 - y) * region->stride;
-		for (x = 0; x < width; ++x) {
-			uint8_t const *p = source + 4 * x;
-			/* Mir ABGR8888 is [R, G, B, A] in memory on this target. */
-			y_plane[(size_t)y * y_stride + x] =
-				clamp8(((47*p[0] + 157*p[1] + 16*p[2] + 128) >> 8) + 16);
-		}
-	}
-	for (y = 0; y < height; y += 2) {
-		for (x = 0; x < width; x += 2) {
-			unsigned int sum_r = 0, sum_g = 0, sum_b = 0;
-			unsigned int dy, dx;
-			for (dy = 0; dy != 2; ++dy) {
-				uint8_t const *source = (uint8_t const *)region->vaddr +
-					(size_t)(height - 1 - y - dy) * region->stride;
-				for (dx = 0; dx != 2; ++dx) {
-					uint8_t const *p = source + 4 * (x + dx);
-					sum_r += p[0];
-					sum_g += p[1];
-					sum_b += p[2];
-				}
-			}
-			sum_r = (sum_r + 2) / 4;
-			sum_g = (sum_g + 2) / 4;
-			sum_b = (sum_b + 2) / 4;
-			uv_plane[(size_t)(y / 2) * y_stride + x] =
-				clamp8(((-26*(int)sum_r - 87*(int)sum_g + 112*(int)sum_b + 128) >> 8) + 128);
-			uv_plane[(size_t)(y / 2) * y_stride + x + 1] =
-				clamp8(((112*(int)sum_r - 102*(int)sum_g - 10*(int)sum_b + 128) >> 8) + 128);
-		}
-	}
-}
-
 static void set_rec709_limited(struct v4l2_pix_format_mplane *format)
 {
 	format->colorspace = V4L2_COLORSPACE_REC709;
@@ -212,8 +165,43 @@ static void print_color_format(char const *name,
 		format->xfer_func);
 }
 
+static unsigned int mir_bytes_per_pixel(int format)
+{
+	if (format >= 1 && format <= 4) return 4;
+	if (format == 5 || format == 6) return 3;
+	if (format == 7) return 2;
+	return 0;
+}
+
+static char const *mir_format_name(int format)
+{
+	static char const *names[] = {"invalid", "ABGR8888", "XBGR8888", "ARGB8888",
+		"XRGB8888", "BGR888", "RGB888", "RGB565"};
+	return format >= 1 && format <= 7 ? names[format] : "unknown";
+}
+
+static void store_test_pixel(uint8_t *destination, int format,
+	uint8_t red, uint8_t green, uint8_t blue)
+{
+	if (format == 1 || format == 2) {
+		destination[0] = red; destination[1] = green;
+		destination[2] = blue; destination[3] = 255;
+	} else if (format == 3 || format == 4) {
+		destination[0] = blue; destination[1] = green;
+		destination[2] = red; destination[3] = 255;
+	} else if (format == 5) {
+		destination[0] = blue; destination[1] = green; destination[2] = red;
+	} else if (format == 6) {
+		destination[0] = red; destination[1] = green; destination[2] = blue;
+	} else {
+		uint16_t packed = (uint16_t)(((red >> 3) << 11) |
+			((green >> 2) << 5) | (blue >> 3));
+		destination[0] = packed & 0xff; destination[1] = packed >> 8;
+	}
+}
+
 static void fill_test_pattern(uint8_t *pixels, unsigned int width,
-	unsigned int height)
+	unsigned int height, int format)
 {
 	static uint8_t const colors[][3] = {
 		{0, 0, 0}, {255, 255, 255}, {128, 128, 128},
@@ -240,11 +228,24 @@ static void fill_test_pattern(uint8_t *pixels, unsigned int width,
 			else
 				color = (uint8_t const[]) {((x * 255U) / (width - 1)),
 					((y * 255U) / (height - 1)), 128};
-			pixels[(size_t)y * width * 4 + 4 * x + 0] = color[0];
-			pixels[(size_t)y * width * 4 + 4 * x + 1] = color[1];
-			pixels[(size_t)y * width * 4 + 4 * x + 2] = color[2];
-			pixels[(size_t)y * width * 4 + 4 * x + 3] = 255;
+			store_test_pixel(pixels + ((size_t)y * width + x) *
+				mir_bytes_per_pixel(format), format, color[0], color[1], color[2]);
 		}
+	}
+}
+
+static void mir_to_rgb4(struct mapped_buffer *buffer,
+	MirGraphicsRegion const *region, unsigned int width, unsigned int height,
+	unsigned int destination_stride)
+{
+	uint8_t *destination = buffer->ptr[0];
+	unsigned int y;
+	memset(destination, 0xff, buffer->len[0]);
+	for (y = 0; y < height; ++y) {
+		uint8_t const *source = (uint8_t const *)region->vaddr +
+			(size_t)(height - 1 - y) * region->stride;
+		memcpy(destination + (size_t)y * destination_stride, source,
+			(size_t)width * 4);
 	}
 }
 
@@ -545,7 +546,8 @@ static int dequeue_capture(int fd, int output_fd, enum v4l2_buf_type type,
 			   uint64_t *bytes, uint64_t *access_units,
 			   size_t *maximum_access_unit, struct ts_mux *mux,
 			   struct frame_meta metadata[64], unsigned int *metadata_head,
-			   unsigned int *metadata_tail, struct phone_stats *stats)
+			   unsigned int *metadata_tail, struct phone_stats *stats,
+			   pthread_mutex_t *metadata_mutex)
 {
 	for (;;) {
 		struct v4l2_plane p[NPLANE];
@@ -559,10 +561,12 @@ static int dequeue_capture(int fd, int output_fd, enum v4l2_buf_type type,
 		}
 		if (p[0].bytesused) {
 			struct frame_meta meta = {0};
+			pthread_mutex_lock(metadata_mutex);
 			if (*metadata_head != *metadata_tail) {
 				meta = metadata[*metadata_head % 64];
 				++*metadata_head;
 			}
+			pthread_mutex_unlock(metadata_mutex);
 			if (p[0].bytesused > *maximum_access_unit)
 				*maximum_access_unit = p[0].bytesused;
 			uint64_t encode_end_ns = monotonic_ns();
@@ -574,6 +578,7 @@ static int dequeue_capture(int fd, int output_fd, enum v4l2_buf_type type,
 				perror("write H264");
 				return -1;
 			}
+			pthread_mutex_lock(metadata_mutex);
 			if (meta.submit_ns && stats->sample_count < PHONE_SAMPLE_COUNT) {
 				struct phone_sample *sample = &stats->samples[stats->sample_count++];
 				sample->source_interval_ns = stats->previous_source_ns &&
@@ -587,6 +592,7 @@ static int dequeue_capture(int fd, int output_fd, enum v4l2_buf_type type,
 			}
 			++stats->encoder_completed;
 			++stats->transport_sent;
+			pthread_mutex_unlock(metadata_mutex);
 			*bytes += p[0].bytesused;
 			++*access_units;
 		}
@@ -602,7 +608,8 @@ static int dequeue_capture(int fd, int output_fd, enum v4l2_buf_type type,
 
 static int dequeue_output(int fd, enum v4l2_buf_type type,
 			  struct mapped_buffer buffers[NBUF], unsigned char free_map[NBUF],
-			  unsigned int *in_flight)
+			  unsigned int *in_flight, pthread_mutex_t *output_mutex,
+			  pthread_cond_t *output_available)
 {
 	for (;;) {
 		struct v4l2_plane p[NPLANE];
@@ -614,12 +621,16 @@ static int dequeue_output(int fd, enum v4l2_buf_type type,
 			perror("DQBUF output");
 			return -1;
 		}
+		pthread_mutex_lock(output_mutex);
 		if (buffer.index >= NBUF || free_map[buffer.index]) {
 			fprintf(stderr, "invalid output completion index=%u\n", buffer.index);
+			pthread_mutex_unlock(output_mutex);
 			return -1;
 		}
 		free_map[buffer.index] = 1;
 		if (*in_flight) --*in_flight;
+		pthread_cond_signal(output_available);
+		pthread_mutex_unlock(output_mutex);
 	}
 }
 
@@ -629,6 +640,106 @@ static int next_free(unsigned char const free_map[NBUF], unsigned int count)
 	for (index = 0; index < count; ++index)
 		if (free_map[index]) return (int)index;
 	return -1;
+}
+
+struct completion_context {
+	int encoder_fd;
+	int output_fd;
+	enum v4l2_buf_type output_type;
+	enum v4l2_buf_type capture_type;
+	struct mapped_buffer *output;
+	struct mapped_buffer *capture;
+	unsigned int capture_planes;
+	unsigned char *output_free;
+	unsigned int *in_flight;
+	unsigned int *submitted;
+	uint64_t *bytes;
+	uint64_t *access_units;
+	size_t *maximum_access_unit;
+	struct ts_mux *mux;
+	struct frame_meta *metadata;
+	unsigned int *metadata_head;
+	unsigned int *metadata_tail;
+	struct phone_stats *stats;
+	pthread_mutex_t output_mutex;
+	pthread_cond_t output_available;
+	pthread_mutex_t metadata_mutex;
+	int producer_done;
+	int error;
+	uint64_t thread_cpu_ns;
+};
+
+struct cpu_ticks {
+	uint64_t total;
+	uint64_t idle;
+};
+
+static uint64_t thread_cpu_ns(void)
+{
+	struct timespec value;
+	clock_gettime(CLOCK_THREAD_CPUTIME_ID, &value);
+	return (uint64_t)value.tv_sec * 1000000000ULL + value.tv_nsec;
+}
+
+static struct cpu_ticks read_cpu_ticks(void)
+{
+	struct cpu_ticks result = {0};
+	unsigned long long user, nice, system, idle, iowait, irq, softirq, steal;
+	FILE *file = fopen("/proc/stat", "r");
+	if (!file) return result;
+	if (fscanf(file, "cpu %llu %llu %llu %llu %llu %llu %llu %llu",
+		&user, &nice, &system, &idle, &iowait, &irq, &softirq, &steal) == 8) {
+		result.total = user + nice + system + idle + iowait + irq + softirq + steal;
+		result.idle = idle + iowait;
+	}
+	fclose(file);
+	return result;
+}
+
+static void completion_fail(struct completion_context *context)
+{
+	pthread_mutex_lock(&context->output_mutex);
+	context->error = 1;
+	pthread_cond_broadcast(&context->output_available);
+	pthread_mutex_unlock(&context->output_mutex);
+}
+
+static void *completion_worker(void *argument)
+{
+	struct completion_context *context = argument;
+	uint64_t cpu_start = thread_cpu_ns();
+	for (;;) {
+		struct pollfd poll_fd = {
+			.fd = context->encoder_fd,
+			.events = POLLIN | POLLOUT,
+		};
+		int done;
+		pthread_mutex_lock(&context->output_mutex);
+		done = context->producer_done && !*context->in_flight &&
+			*context->access_units >= *context->submitted;
+		pthread_mutex_unlock(&context->output_mutex);
+		if (done) break;
+		if (poll(&poll_fd, 1, 2000) < 0) {
+			if (errno == EINTR) continue;
+			perror("poll completion worker");
+			completion_fail(context);
+			break;
+		}
+		if (dequeue_capture(context->encoder_fd, context->output_fd,
+			context->capture_type, context->capture, context->capture_planes,
+			context->bytes, context->access_units, context->maximum_access_unit,
+			context->mux, context->metadata, context->metadata_head,
+			context->metadata_tail, context->stats,
+			&context->metadata_mutex) < 0 ||
+		    dequeue_output(context->encoder_fd, context->output_type,
+			context->output, context->output_free, context->in_flight,
+			&context->output_mutex, &context->output_available) < 0) {
+			completion_fail(context);
+			break;
+		}
+	}
+	context->thread_cpu_ns = thread_cpu_ns() - cpu_start;
+	return NULL;
 }
 
 static uint64_t phone_sample_value(struct phone_sample const *sample, int metric)
@@ -675,17 +786,36 @@ static void report_phone_metric(struct phone_stats const *stats, char const *nam
 static void report_phone_stats(struct phone_stats const *stats, unsigned int submitted)
 {
 	fprintf(stderr, "phone_counts mir=%llu encoder_submitted=%llu encoder_completed=%llu "
-		"transport_sent=%llu samples=%u submitted=%u\n",
+		"transport_sent=%llu samples=%u submitted=%u source_pending_replacements=%llu "
+		"encoder_buffer_waits=%u\n",
 		(unsigned long long)stats->mir_frames,
 		(unsigned long long)stats->encoder_submitted,
 		(unsigned long long)stats->encoder_completed,
 		(unsigned long long)stats->transport_sent,
-		stats->sample_count, submitted);
+		stats->sample_count, submitted,
+		(unsigned long long)stats->source_pending_replacements,
+		stats->encoder_wait_count);
 	report_phone_metric(stats, "mir_interval", 0);
 	report_phone_metric(stats, "rgb_to_nv12", 1);
 	report_phone_metric(stats, "venus_encode", 2);
 	report_phone_metric(stats, "transport_send", 3);
 	report_phone_metric(stats, "phone_total", 4);
+	if (stats->encoder_wait_count) {
+		uint64_t values[PHONE_SAMPLE_COUNT];
+		unsigned int i, p50, p95;
+		for (i = 0; i < stats->encoder_wait_count; ++i) values[i] = stats->encoder_wait_ns[i];
+		for (i = 1; i < stats->encoder_wait_count; ++i) {
+			uint64_t value = values[i];
+			unsigned int j = i;
+			while (j && values[j - 1] > value) { values[j] = values[j - 1]; --j; }
+			values[j] = value;
+		}
+		p50 = stats->encoder_wait_count / 2;
+		p95 = (stats->encoder_wait_count * 95) / 100;
+		if (p95 >= stats->encoder_wait_count) p95 = stats->encoder_wait_count - 1;
+		fprintf(stderr, "phone_timing metric=encoder_buffer_wait count=%u p50_us=%.1f p95_us=%.1f\n",
+			stats->encoder_wait_count, values[p50] / 1000.0, values[p95] / 1000.0);
+	}
 }
 
 int main(int argc, char **argv)
@@ -700,6 +830,10 @@ int main(int argc, char **argv)
 	unsigned int bitrate = argc > 8 ? (unsigned int)strtoul(argv[8], NULL, 10) : 15000000;
 	unsigned int capture_width = argc > 9 ? (unsigned int)strtoul(argv[9], NULL, 10) : width;
 	unsigned int capture_height = argc > 10 ? (unsigned int)strtoul(argv[10], NULL, 10) : height;
+	char const *input_mode = argc > 11 ? argv[11] : "nv12";
+	int mir_format = argc > 12 ? (int)strtol(argv[12], NULL, 10) : 1;
+	enum h264_converter converter = getenv("MIR_VENUS_SCALAR") ?
+		H264_CONVERTER_SCALAR : H264_CONVERTER_OPTIMIZED;
 	struct ts_mux mux = {0};
 	struct mir_api mir;
 	MirConnection *connection = NULL;
@@ -722,15 +856,26 @@ int main(int argc, char **argv)
 	uint64_t bytes = 0, access_units = 0, copy_ns = 0, swap_ns = 0;
 	size_t maximum_access_unit = 0;
 	uint64_t start_ns, end_ns;
+	uint64_t main_cpu_start_ns = 0, main_cpu_end_ns = 0;
+	struct cpu_ticks cpu_start = {0}, cpu_end = {0};
+	struct rusage usage;
 	struct frame_meta metadata[64] = {0};
 	unsigned int metadata_head = 0, metadata_tail = 0;
 	struct phone_stats phone_stats = {0};
+	struct completion_context completion = {0};
+	pthread_t completion_thread;
+	int completion_started = 0;
+	int completion_initialized = 0;
 
-	if (!frame_limit || !width || !height || !capture_width || !capture_height ||
-	    target_fps > 240 ||
+	if (!frame_limit || !width || !height || (width & 1U) || (height & 1U) ||
+	    !capture_width || !capture_height || !target_fps || target_fps > 240 ||
 	    (strcmp(transport, "annexb") && strcmp(transport, "mpegts") &&
-	     strcmp(transport, "framed")) || !bitrate) {
-		fprintf(stderr, "usage: %s [output|-] [frames] [width] [height] [capture-left] [fps] [annexb|mpegts|framed] [bitrate] [capture-width] [capture-height]\n", argv[0]);
+	     strcmp(transport, "framed")) || !bitrate ||
+	    (strcmp(input_mode, "nv12") && strcmp(input_mode, "rgb4")) ||
+	    !mir_bytes_per_pixel(mir_format) ||
+	    (!strcmp(input_mode, "nv12") && mir_format != 1 && mir_format != 2) ||
+	    (!strcmp(input_mode, "rgb4") && mir_bytes_per_pixel(mir_format) != 4)) {
+		fprintf(stderr, "usage: %s [output|-] [frames] [width] [height] [capture-left] [fps] [annexb|mpegts|framed] [bitrate] [capture-width] [capture-height] [nv12|rgb4] [Mir-format-id]\n", argv[0]);
 		return EXIT_FAILURE;
 	}
 	mux.enabled = !strcmp(transport, "mpegts");
@@ -749,7 +894,7 @@ int main(int argc, char **argv)
 	if (!spec) { fprintf(stderr, "cannot create Mir screencast spec\n"); goto done; }
 	mir.spec_set_width(spec, width);
 	mir.spec_set_height(spec, height);
-	mir.spec_set_pixel_format(spec, 1); /* mir_pixel_format_abgr_8888 */
+	mir.spec_set_pixel_format(spec, mir_format);
 	mir.spec_set_capture_region(spec, &rectangle);
 	/*
 	 * This is the Mir external-output contract used by mirgud.  Keep it on the
@@ -793,7 +938,8 @@ int main(int argc, char **argv)
 	format.type = output_type;
 	format.fmt.pix_mp.width = width;
 	format.fmt.pix_mp.height = height;
-	format.fmt.pix_mp.pixelformat = V4L2_PIX_FMT_NV12;
+	format.fmt.pix_mp.pixelformat = !strcmp(input_mode, "rgb4") ?
+		V4L2_PIX_FMT_RGB32 : V4L2_PIX_FMT_NV12;
 	format.fmt.pix_mp.field = V4L2_FIELD_NONE;
 	set_rec709_limited(&format.fmt.pix_mp);
 	print_encoder_input_formats(encoder_fd, output_type);
@@ -812,9 +958,12 @@ int main(int argc, char **argv)
 	output_planes = format.fmt.pix_mp.num_planes;
 	for (plane = 0; plane < output_planes; ++plane)
 		output_sizes[plane] = format.fmt.pix_mp.plane_fmt[plane].sizeimage;
-	fprintf(stderr, "mir_venus config=%ux%u source=Mir-ABGR8888 encoder=Venus-NV12 output=H264 "
-		"transport=%s bitrate=%u capture_buffers=%u requested_frames=%u\n",
-		width, height, transport, bitrate, NBUF, frame_limit);
+	fprintf(stderr, "mir_venus config=%ux%u source=Mir-%s encoder=Venus-%s output=H264 "
+		"transport=%s bitrate=%u capture_buffers=%u requested_frames=%u converter=%s\n",
+		width, height, mir_format_name(mir_format),
+		!strcmp(input_mode, "rgb4") ? "RGB4" : "NV12",
+		transport, bitrate, NBUF, frame_limit,
+		!strcmp(input_mode, "rgb4") ? "direct-copy" : h264_converter_name(converter));
 
 	parm.type = output_type;
 	parm.parm.output.timeperframe.numerator = 1;
@@ -840,7 +989,41 @@ int main(int argc, char **argv)
 		perror("STREAMON");
 		goto done;
 	}
+	completion.encoder_fd = encoder_fd;
+	completion.output_fd = output_fd;
+	completion.output_type = output_type;
+	completion.capture_type = capture_type;
+	completion.output = output;
+	completion.capture = capture;
+	completion.capture_planes = capture_planes;
+	completion.output_free = output_free;
+	completion.in_flight = &in_flight;
+	completion.submitted = &submitted;
+	completion.bytes = &bytes;
+	completion.access_units = &access_units;
+	completion.maximum_access_unit = &maximum_access_unit;
+	completion.mux = &mux;
+	completion.metadata = metadata;
+	completion.metadata_head = &metadata_head;
+	completion.metadata_tail = &metadata_tail;
+	completion.stats = &phone_stats;
+	if (pthread_mutex_init(&completion.output_mutex, NULL) ||
+	    pthread_mutex_init(&completion.metadata_mutex, NULL) ||
+	    pthread_cond_init(&completion.output_available, NULL)) {
+		fprintf(stderr, "cannot initialize Venus completion worker\n");
+		goto done;
+	}
+	completion_initialized = 1;
+	if (pthread_create(&completion_thread, NULL, completion_worker, &completion)) {
+		fprintf(stderr, "cannot start Venus completion worker\n");
+		goto done;
+	}
+	completion_started = 1;
+	fprintf(stderr, "phone pipeline completion_drain=independent output_buffers=%u bounded=true\n",
+		(unsigned int)output_count);
 
+	cpu_start = read_cpu_ticks();
+	main_cpu_start_ns = thread_cpu_ns();
 	start_ns = monotonic_ns();
 	while (submitted < frame_limit && !stop_requested) {
 		int free_index;
@@ -851,14 +1034,25 @@ int main(int argc, char **argv)
 			while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &deadline, NULL) < 0 &&
 			       errno == EINTR && !stop_requested) {}
 		}
-		while ((free_index = next_free(output_free, (unsigned int)output_count)) < 0) {
-			struct pollfd poll_fd = {.fd = encoder_fd, .events = POLLIN | POLLOUT};
-			if (poll(&poll_fd, 1, 2000) <= 0) { perror("poll waiting for output"); goto done; }
-		if (dequeue_capture(encoder_fd, output_fd, capture_type, capture,
-				capture_planes, &bytes, &access_units, &maximum_access_unit,
-				&mux, metadata, &metadata_head, &metadata_tail, &phone_stats) < 0 ||
-			    dequeue_output(encoder_fd, output_type, output, output_free, &in_flight) < 0)
+		{
+			uint64_t wait_start = monotonic_ns();
+			int waited = 0;
+			pthread_mutex_lock(&completion.output_mutex);
+			free_index = next_free(output_free, (unsigned int)output_count);
+			while (free_index < 0 && !completion.error) {
+				waited = 1;
+				pthread_cond_wait(&completion.output_available, &completion.output_mutex);
+				free_index = next_free(output_free, (unsigned int)output_count);
+			}
+			if (completion.error) {
+				pthread_mutex_unlock(&completion.output_mutex);
 				goto done;
+			}
+			output_free[free_index] = 0; /* reserve while converting */
+			pthread_mutex_unlock(&completion.output_mutex);
+			if (waited && phone_stats.encoder_wait_count < PHONE_SAMPLE_COUNT)
+				phone_stats.encoder_wait_ns[phone_stats.encoder_wait_count++] =
+					monotonic_ns() - wait_start;
 		}
 		{
 		MirGraphicsRegion region = {0};
@@ -870,26 +1064,36 @@ int main(int argc, char **argv)
 			mir.buffer_stream_get_graphics_region(stream, &region);
 			source_ns = monotonic_ns();
 			if (!region.vaddr || region.width != (int)width || region.height != (int)height ||
-			    region.stride < (int)(width * 4) || region.pixel_format != 1) {
+			    region.stride < (int)(width * mir_bytes_per_pixel(mir_format)) ||
+			    region.pixel_format != mir_format) {
 				fprintf(stderr, "unexpected Mir region %dx%d stride=%d format=%d ptr=%p\n",
 					region.width, region.height, region.stride, region.pixel_format, region.vaddr);
 				goto done;
 			}
 			if (getenv("MIR_VENUS_TEST_PATTERN")) {
 				if (!test_pattern)
-					test_pattern = malloc((size_t)width * height * 4);
+					test_pattern = malloc((size_t)width * height *
+						mir_bytes_per_pixel(mir_format));
 				if (!test_pattern) {
 					fprintf(stderr, "cannot allocate test pattern\n");
 					goto done;
 				}
-				fill_test_pattern(test_pattern, width, height);
+				fill_test_pattern(test_pattern, width, height, mir_format);
 				region.vaddr = test_pattern;
-				region.stride = (int)(width * 4);
+				region.stride = (int)(width * mir_bytes_per_pixel(mir_format));
 			}
 			copy_start = monotonic_ns();
-			mir_abgr_to_nv12(&output[free_index], &region, width, height,
-				format.fmt.pix_mp.plane_fmt[0].bytesperline ?: width,
-				height);
+			if (!strcmp(input_mode, "rgb4"))
+				mir_to_rgb4(&output[free_index], &region, width, height,
+					format.fmt.pix_mp.plane_fmt[0].bytesperline ?: width * 4);
+			else {
+				unsigned int y_stride = format.fmt.pix_mp.plane_fmt[0].bytesperline ?: width;
+				h264_abgr_to_nv12(output[free_index].ptr[0], output[free_index].len[0],
+					output[free_index].planes > 1 ? output[free_index].ptr[1] : NULL,
+					output[free_index].planes > 1 ? output[free_index].len[1] : 0,
+					y_stride, height, region.vaddr, (unsigned int)region.stride,
+					width, height, converter);
+			}
 			conversion_end = monotonic_ns();
 			copy_ns += conversion_end - copy_start;
 			prepare_planes(&output[free_index], p);
@@ -898,9 +1102,10 @@ int main(int argc, char **argv)
 			buffer.timestamp.tv_usec =
 				(submitted % target_fps) * (1000000U / target_fps);
 			submit_ns = monotonic_ns();
-			if (xioctl(encoder_fd, VIDIOC_QBUF, &buffer) < 0) { perror("QBUF output"); goto done; }
+			pthread_mutex_lock(&completion.metadata_mutex);
 			if (metadata_tail - metadata_head >= 64) {
 				fprintf(stderr, "frame metadata queue overflow\n");
+				pthread_mutex_unlock(&completion.metadata_mutex);
 				goto done;
 			}
 			metadata[metadata_tail % 64].sequence = submitted;
@@ -909,9 +1114,23 @@ int main(int argc, char **argv)
 			metadata[metadata_tail % 64].conversion_end_ns = conversion_end;
 			metadata[metadata_tail % 64].submit_ns = submit_ns;
 			++metadata_tail;
-			output_free[free_index] = 0;
+			pthread_mutex_unlock(&completion.metadata_mutex);
+			pthread_mutex_lock(&completion.output_mutex);
 			++in_flight;
 			if (in_flight > max_in_flight) max_in_flight = in_flight;
+			pthread_mutex_unlock(&completion.output_mutex);
+			if (xioctl(encoder_fd, VIDIOC_QBUF, &buffer) < 0) {
+				perror("QBUF output");
+				pthread_mutex_lock(&completion.metadata_mutex);
+				--metadata_tail;
+				pthread_mutex_unlock(&completion.metadata_mutex);
+				pthread_mutex_lock(&completion.output_mutex);
+				--in_flight;
+				output_free[free_index] = 1;
+				pthread_cond_signal(&completion.output_available);
+				pthread_mutex_unlock(&completion.output_mutex);
+				goto done;
+			}
 			++submitted;
 			++phone_stats.mir_frames;
 			++phone_stats.encoder_submitted;
@@ -919,29 +1138,17 @@ int main(int argc, char **argv)
 			mir.buffer_stream_swap_buffers_sync(stream);
 			swap_ns += monotonic_ns() - swap_start;
 		}
-			if (dequeue_capture(encoder_fd, output_fd, capture_type, capture,
-				capture_planes, &bytes, &access_units, &maximum_access_unit,
-				&mux, metadata, &metadata_head, &metadata_tail, &phone_stats) < 0 ||
-		    dequeue_output(encoder_fd, output_type, output, output_free, &in_flight) < 0)
-			goto done;
 	}
-	while (in_flight) {
-		struct pollfd poll_fd = {.fd = encoder_fd, .events = POLLIN | POLLOUT};
-		if (poll(&poll_fd, 1, 2000) <= 0) { perror("poll drain"); goto done; }
-		if (dequeue_capture(encoder_fd, output_fd, capture_type, capture,
-			capture_planes, &bytes, &access_units, &maximum_access_unit,
-			&mux, metadata, &metadata_head, &metadata_tail, &phone_stats) < 0 ||
-		    dequeue_output(encoder_fd, output_type, output, output_free, &in_flight) < 0)
-			goto done;
-	}
-	/* Capture completions can trail the returned input buffers briefly. */
-	for (index = 0; index < 20 && access_units < submitted; ++index) {
-		struct pollfd poll_fd = {.fd = encoder_fd, .events = POLLIN};
-		if (poll(&poll_fd, 1, 100) < 0 && errno != EINTR) { perror("poll capture drain"); goto done; }
-		if (dequeue_capture(encoder_fd, output_fd, capture_type, capture,
-			capture_planes, &bytes, &access_units, &maximum_access_unit,
-			&mux, metadata, &metadata_head, &metadata_tail, &phone_stats) < 0) goto done;
-	}
+	pthread_mutex_lock(&completion.output_mutex);
+	completion.producer_done = 1;
+	pthread_cond_broadcast(&completion.output_available);
+	pthread_mutex_unlock(&completion.output_mutex);
+	pthread_join(completion_thread, NULL);
+	completion_started = 0;
+	if (completion.error) goto done;
+	main_cpu_end_ns = thread_cpu_ns();
+	cpu_end = read_cpu_ticks();
+	getrusage(RUSAGE_SELF, &usage);
 	end_ns = monotonic_ns();
 	{
 		double seconds = (end_ns - start_ns) / 1000000000.0;
@@ -953,10 +1160,37 @@ int main(int argc, char **argv)
 			copy_ns / 1000000.0 / submitted, swap_ns / 1000000.0 / submitted,
 			max_in_flight, access_units == submitted ? "true" : "false");
 		report_phone_stats(&phone_stats, submitted);
+		{
+			uint64_t total_delta = cpu_end.total - cpu_start.total;
+			uint64_t idle_delta = cpu_end.idle - cpu_start.idle;
+			double process_cpu_ms =
+				usage.ru_utime.tv_sec * 1000.0 + usage.ru_utime.tv_usec / 1000.0 +
+				usage.ru_stime.tv_sec * 1000.0 + usage.ru_stime.tv_usec / 1000.0;
+			fprintf(stderr, "phone_cpu process_one_core_percent=%.2f aggregate_soc_busy_percent=%.2f "
+				"main_thread_one_core_percent=%.2f completion_thread_one_core_percent=%.2f\n",
+				process_cpu_ms / 1000.0 / seconds * 100.0,
+				total_delta ? (total_delta - idle_delta) * 100.0 / total_delta : 0.0,
+				(main_cpu_end_ns - main_cpu_start_ns) / 1000000000.0 / seconds * 100.0,
+				completion.thread_cpu_ns / 1000000000.0 / seconds * 100.0);
+		}
 	}
 	result = access_units == submitted ? EXIT_SUCCESS : EXIT_FAILURE;
 
 done:
+	if (completion_started) {
+		pthread_mutex_lock(&completion.output_mutex);
+		completion.producer_done = 1;
+		pthread_cond_broadcast(&completion.output_available);
+		pthread_mutex_unlock(&completion.output_mutex);
+		pthread_join(completion_thread, NULL);
+		completion_started = 0;
+	}
+	if (completion_initialized) {
+		pthread_cond_destroy(&completion.output_available);
+		pthread_mutex_destroy(&completion.metadata_mutex);
+		pthread_mutex_destroy(&completion.output_mutex);
+		completion_initialized = 0;
+	}
 	if (encoder_fd >= 0) {
 		xioctl(encoder_fd, VIDIOC_STREAMOFF, &output_type);
 		xioctl(encoder_fd, VIDIOC_STREAMOFF, &capture_type);

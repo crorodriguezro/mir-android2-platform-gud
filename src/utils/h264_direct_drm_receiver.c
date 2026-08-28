@@ -14,6 +14,7 @@
 #include <linux/videodev2.h>
 #include <netinet/in.h>
 #include <poll.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -26,6 +27,8 @@
 #include <sys/syscall.h>
 #include <time.h>
 #include <unistd.h>
+
+#include "h264_latest_presenter_state.h"
 
 #define WIDTH 1920U
 #define DISPLAY_HEIGHT 1080U
@@ -77,10 +80,42 @@ struct pi_stats {
 	uint64_t decoder_submitted;
 	uint64_t decoder_completed;
 	uint64_t drm_submitted;
+	uint64_t drm_completed;
+	uint64_t immediate_submits;
+	uint64_t pending_frames;
+	uint64_t pending_replacements;
+	unsigned int max_presentation_in_flight;
+	unsigned int max_presentation_pending;
 	uint64_t decoder_durations[PI_SAMPLE_COUNT];
 	unsigned int decoder_duration_count;
 	struct pi_present_sample presented[PI_SAMPLE_COUNT];
 	unsigned int presented_count;
+};
+
+struct presenter_frame {
+	struct metadata metadata;
+	uint64_t decode_end_ns;
+};
+
+struct latest_presenter {
+	pthread_mutex_t mutex;
+	pthread_cond_t wakeup;
+	pthread_t thread;
+	struct h264_latest_state state;
+	struct presenter_frame frame[CAPTURE_COUNT];
+	struct capture_buffer *capture;
+	struct pi_stats *stats;
+	struct sample *ages;
+	unsigned int *age_count;
+	uint64_t *first_source_ns;
+	uint64_t *first_rx_ns;
+	int decoder;
+	int drmfd;
+	uint32_t plane_id;
+	uint32_t crtc_id;
+	int displayed;
+	int stopping;
+	int failure;
 };
 
 static volatile sig_atomic_t stop_requested;
@@ -197,6 +232,12 @@ static int set_plane(int drmfd, uint32_t plane, uint32_t crtc,
 		.src_w = WIDTH << 16,
 		.src_h = source_height << 16,
 	};
+	return xioctl(drmfd, DRM_IOCTL_MODE_SETPLANE, &command);
+}
+
+static int disable_plane(int drmfd, uint32_t plane)
+{
+	struct drm_mode_set_plane command = {.plane_id = plane};
 	return xioctl(drmfd, DRM_IOCTL_MODE_SETPLANE, &command);
 }
 
@@ -336,28 +377,224 @@ static void report_pi_decode_metric(struct pi_stats const *stats)
 		values[p95] / 1000.0, maximum / 1000.0);
 }
 
-static int no_restore_requested(void)
-{
-	char const *value = getenv("H264_RECEIVER_NO_RESTORE");
-	return value && value[0] == '1' && value[1] == '\0';
-}
-
 static void report_pi_stats(struct pi_stats const *stats, unsigned int received,
 	unsigned int decoded, unsigned int presented, unsigned int dropped)
 {
 	fprintf(stderr, "pi_counts received=%u decoder_submitted=%llu decoder_completed=%u "
 		"drm_submitted=%u decoder_replaced=%u decoder_missing=%u dropped_before_decode=%u "
-		"presentation_completed=unavailable\n", received,
+		"presentation_completed=%llu immediate_submits=%llu pending_frames=%llu "
+		"pending_replacements=%llu max_presentation_in_flight=%u "
+		"max_presentation_pending=%u\n", received,
 		(unsigned long long)stats->decoder_submitted, decoded, presented,
 		decoded >= presented ? decoded - presented : 0,
 		stats->decoder_submitted >= decoded ?
-			(unsigned int)(stats->decoder_submitted - decoded) : 0, dropped);
+			(unsigned int)(stats->decoder_submitted - decoded) : 0, dropped,
+		(unsigned long long)stats->drm_completed,
+		(unsigned long long)stats->immediate_submits,
+		(unsigned long long)stats->pending_frames,
+		(unsigned long long)stats->pending_replacements,
+		stats->max_presentation_in_flight, stats->max_presentation_pending);
 	report_pi_decode_metric(stats);
 	report_pi_metric(stats->presented, stats->presented_count,
 		"receive_to_decoder_submit", 0);
 	report_pi_metric(stats->presented, stats->presented_count, "decode_to_drm", 2);
 	report_pi_metric(stats->presented, stats->presented_count, "drm_submit", 3);
 	report_pi_metric(stats->presented, stats->presented_count, "receive_to_presentation_submit", 4);
+}
+
+static void *latest_presenter_worker(void *argument)
+{
+	struct latest_presenter *presenter = argument;
+	for (;;) {
+		struct presenter_frame frame;
+		uint64_t commit_start, commit_end;
+		int index, old_displayed;
+		pthread_mutex_lock(&presenter->mutex);
+		while ((presenter->state.in_flight < 0 || presenter->state.started) &&
+		       !presenter->stopping)
+			pthread_cond_wait(&presenter->wakeup, &presenter->mutex);
+		if (presenter->state.in_flight < 0 && presenter->stopping) {
+			pthread_mutex_unlock(&presenter->mutex);
+			break;
+		}
+		index = h264_latest_begin(&presenter->state);
+		frame = presenter->frame[index];
+		presenter->stats->drm_submitted = presenter->state.submitted;
+		pthread_mutex_unlock(&presenter->mutex);
+
+		commit_start = monotonic_ns();
+		if (set_plane(presenter->drmfd, presenter->plane_id, presenter->crtc_id,
+			presenter->capture[index].framebuffer, DISPLAY_HEIGHT) < 0) {
+			perror("SETPLANE NV12");
+			pthread_mutex_lock(&presenter->mutex);
+			presenter->failure = 1;
+			presenter->stopping = 1;
+			h264_latest_complete(&presenter->state);
+			pthread_cond_broadcast(&presenter->wakeup);
+			pthread_mutex_unlock(&presenter->mutex);
+			break;
+		}
+		commit_end = monotonic_ns();
+
+		pthread_mutex_lock(&presenter->mutex);
+		h264_latest_complete(&presenter->state);
+		presenter->stats->drm_completed = presenter->state.completed;
+		old_displayed = presenter->displayed;
+		presenter->displayed = index;
+		if (presenter->stats->presented_count < PI_SAMPLE_COUNT &&
+		    frame.metadata.receive_ns) {
+			struct pi_present_sample *sample =
+				&presenter->stats->presented[presenter->stats->presented_count++];
+			sample->receive_to_submit_ns = frame.metadata.decoder_submit_ns -
+				frame.metadata.receive_ns;
+			sample->decode_ns = frame.decode_end_ns - frame.metadata.decoder_submit_ns;
+			sample->decode_to_drm_ns = commit_start - frame.decode_end_ns;
+			sample->drm_submit_ns = commit_end - commit_start;
+			sample->total_ns = commit_end - frame.metadata.receive_ns;
+		}
+		if (frame.metadata.source_ns && *presenter->first_source_ns &&
+		    *presenter->first_rx_ns && *presenter->age_count < META_COUNT) {
+			int64_t relative_age = (int64_t)(commit_end - *presenter->first_rx_ns) -
+				(int64_t)(frame.metadata.source_ns - *presenter->first_source_ns);
+			presenter->ages[(*presenter->age_count)++].value_ns = relative_age;
+			if (presenter->state.completed == 1 || presenter->state.completed % 30 == 0)
+				fprintf(stderr, "present seq=%llu relative_age_ms=%.3f pending_replaced=%llu\n",
+					(unsigned long long)frame.metadata.sequence,
+					relative_age / 1000000.0,
+					(unsigned long long)presenter->state.pending_replaced);
+		}
+		pthread_mutex_unlock(&presenter->mutex);
+
+		/* The previous buffer is safe only after this SETPLANE completed. */
+		if (old_displayed >= 0 && queue_capture(presenter->decoder,
+			(unsigned int)old_displayed, &presenter->capture[old_displayed]) < 0) {
+			perror("QBUF previously displayed capture");
+			pthread_mutex_lock(&presenter->mutex);
+			presenter->failure = 1;
+			presenter->stopping = 1;
+			pthread_cond_broadcast(&presenter->wakeup);
+			pthread_mutex_unlock(&presenter->mutex);
+			break;
+		}
+	}
+	return NULL;
+}
+
+static int latest_presenter_start(struct latest_presenter *presenter,
+	int decoder, int drmfd, uint32_t plane_id, uint32_t crtc_id,
+	struct capture_buffer capture[CAPTURE_COUNT], struct pi_stats *stats,
+	struct sample ages[META_COUNT], unsigned int *age_count,
+	uint64_t *first_source_ns, uint64_t *first_rx_ns)
+{
+	memset(presenter, 0, sizeof(*presenter));
+	presenter->decoder = decoder;
+	presenter->drmfd = drmfd;
+	presenter->plane_id = plane_id;
+	presenter->crtc_id = crtc_id;
+	presenter->capture = capture;
+	presenter->stats = stats;
+	presenter->ages = ages;
+	presenter->age_count = age_count;
+	presenter->first_source_ns = first_source_ns;
+	presenter->first_rx_ns = first_rx_ns;
+	presenter->displayed = -1;
+	h264_latest_state_init(&presenter->state);
+	if (pthread_mutex_init(&presenter->mutex, NULL) ||
+	    pthread_cond_init(&presenter->wakeup, NULL))
+		return -1;
+	return pthread_create(&presenter->thread, NULL, latest_presenter_worker, presenter);
+}
+
+static int latest_presenter_offer(struct latest_presenter *presenter, int index,
+	struct metadata const *metadata, uint64_t decode_end_ns)
+{
+	int replaced;
+	pthread_mutex_lock(&presenter->mutex);
+	if (presenter->failure || presenter->stopping) {
+		pthread_mutex_unlock(&presenter->mutex);
+		return -1;
+	}
+	replaced = h264_latest_offer(&presenter->state, index);
+	presenter->frame[index].metadata = *metadata;
+	presenter->frame[index].decode_end_ns = decode_end_ns;
+	presenter->stats->immediate_submits = presenter->state.immediate;
+	presenter->stats->pending_frames = presenter->state.pending_stored;
+	presenter->stats->pending_replacements = presenter->state.pending_replaced;
+	presenter->stats->max_presentation_in_flight = presenter->state.max_in_flight;
+	presenter->stats->max_presentation_pending = presenter->state.max_pending;
+	pthread_cond_signal(&presenter->wakeup);
+	pthread_mutex_unlock(&presenter->mutex);
+	if (replaced >= 0 && queue_capture(presenter->decoder, (unsigned int)replaced,
+		&presenter->capture[replaced]) < 0) {
+		perror("QBUF replaced pending capture");
+		return -1;
+	}
+	return 0;
+}
+
+static int latest_presenter_stop(struct latest_presenter *presenter)
+{
+	int failure;
+	pthread_mutex_lock(&presenter->mutex);
+	presenter->stopping = 1;
+	pthread_cond_broadcast(&presenter->wakeup);
+	pthread_mutex_unlock(&presenter->mutex);
+	pthread_join(presenter->thread, NULL);
+	pthread_mutex_lock(&presenter->mutex);
+	presenter->stats->immediate_submits = presenter->state.immediate;
+	presenter->stats->pending_frames = presenter->state.pending_stored;
+	presenter->stats->pending_replacements = presenter->state.pending_replaced;
+	presenter->stats->max_presentation_in_flight = presenter->state.max_in_flight;
+	presenter->stats->max_presentation_pending = presenter->state.max_pending;
+	failure = presenter->failure || !h264_latest_state_valid(&presenter->state);
+	pthread_mutex_unlock(&presenter->mutex);
+	pthread_cond_destroy(&presenter->wakeup);
+	pthread_mutex_destroy(&presenter->mutex);
+	return failure ? -1 : 0;
+}
+
+static int drain_decoded_frames(int decoder,
+	struct capture_buffer capture[CAPTURE_COUNT],
+	struct metadata metadata[META_COUNT], unsigned int *metadata_head,
+	unsigned int metadata_tail, unsigned int *decoded,
+	uint64_t *total_dequeue_ns, struct pi_stats *stats,
+	struct latest_presenter *presenter)
+{
+	for (;;) {
+		struct v4l2_plane plane = {0};
+		struct v4l2_buffer buffer = {
+			.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE,
+			.memory = V4L2_MEMORY_MMAP,
+			.length = 1,
+			.m.planes = &plane,
+		};
+		struct metadata frame_metadata = {0};
+		uint64_t dequeue_start = monotonic_ns();
+		uint64_t decode_end;
+		if (xioctl(decoder, VIDIOC_DQBUF, &buffer) < 0) {
+			if (errno == EAGAIN) return 0;
+			perror("DQBUF capture");
+			return -1;
+		}
+		decode_end = monotonic_ns();
+		*total_dequeue_ns += decode_end - dequeue_start;
+		if (buffer.index >= CAPTURE_COUNT) {
+			fprintf(stderr, "invalid decoder capture index=%u\n", buffer.index);
+			return -1;
+		}
+		capture[buffer.index].queued = 0;
+		if (*metadata_head != metadata_tail)
+			frame_metadata = metadata[(*metadata_head)++ % META_COUNT];
+		++*decoded;
+		++stats->decoder_completed;
+		if (stats->decoder_duration_count < PI_SAMPLE_COUNT &&
+		    frame_metadata.decoder_submit_ns)
+			stats->decoder_durations[stats->decoder_duration_count++] =
+				decode_end - frame_metadata.decoder_submit_ns;
+		if (latest_presenter_offer(presenter, (int)buffer.index,
+			&frame_metadata, decode_end) < 0)
+			return -1;
+	}
 }
 
 int main(int argc, char **argv)
@@ -375,10 +612,11 @@ int main(int argc, char **argv)
 	struct sample ages[META_COUNT] = {0};
 	unsigned int metadata_head = 0, metadata_tail = 0, age_count = 0;
 	unsigned int frames = 0, decoded = 0, presented = 0, dropped = 0;
-	int old_capture = -1;
 	struct pi_stats stats = {0};
 	uint64_t total_decode_ns = 0, total_commit_ns = 0;
 	uint64_t first_source_ns = 0, first_rx_ns = 0;
+	struct latest_presenter presenter;
+	int presenter_started = 0;
 	struct rusage usage;
 	int result = EXIT_FAILURE;
 	unsigned int index;
@@ -490,6 +728,13 @@ int main(int argc, char **argv)
 		if (xioctl(decoder, VIDIOC_STREAMON, &type) < 0) { perror("STREAMON output"); goto done; }
 	}
 	fprintf(stderr, "direct receiver active: decoded NV12 DMABUF -> DRM PRIME NV12 -> VC4 1920x1080\n");
+	if (latest_presenter_start(&presenter, decoder, drmfd, plane_id, crtc_id,
+		capture, &stats, ages, &age_count, &first_source_ns, &first_rx_ns) < 0) {
+		fprintf(stderr, "cannot start LatestDecodedFramePresenter\n");
+		goto done;
+	}
+	presenter_started = 1;
+	fprintf(stderr, "LatestDecodedFramePresenter active max_in_flight=1 max_pending=1\n");
 
 	while (!stop_requested && frames < frame_limit) {
 		uint8_t header[32];
@@ -512,6 +757,27 @@ int main(int argc, char **argv)
 					if (buffer.index < OUTPUT_COUNT) output[buffer.index].queued = 0;
 				}
 			}
+		}
+		/* Wait for the next wire frame and decoder completions together.  A
+		 * blocking socket read here used to defer ready capture buffers until
+		 * the following 33 ms input tick and manufactured decoder bursts. */
+		for (;;) {
+			struct pollfd ready[2] = {
+				{.fd = connection, .events = POLLIN},
+				{.fd = decoder, .events = POLLIN},
+			};
+			int poll_result = poll(ready, 2, 1000);
+			if (poll_result < 0 && errno == EINTR) continue;
+			if (poll_result <= 0) {
+				if (!poll_result) continue;
+				perror("poll socket/decoder"); goto done;
+			}
+			if (ready[1].revents & POLLIN)
+				if (drain_decoded_frames(decoder, capture, metadata,
+					&metadata_head, metadata_tail, &decoded,
+					&total_decode_ns, &stats, &presenter) < 0)
+					goto done;
+			if (ready[0].revents & (POLLIN | POLLHUP | POLLERR)) break;
 		}
 		if (read_full(connection, header, sizeof(header)) <= 0) break;
 		if (memcmp(header, "MH264FRM", 8) || header[8] != 1) {
@@ -541,74 +807,14 @@ int main(int argc, char **argv)
 		++stats.decoder_submitted;
 		++frames;
 
-		/* Drain immediately; no PTS pacing and no receiver-side media queue. */
-		{
-			int latest_capture = -1;
-			struct metadata latest_meta = {0};
-			uint64_t latest_decode_end_ns = 0;
-			for (;;) {
-				struct v4l2_plane plane = {0};
-				struct v4l2_buffer buffer = {.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE,
-					.memory = V4L2_MEMORY_MMAP, .length = 1, .m.planes = &plane};
-				uint64_t decode_start = monotonic_ns();
-				if (xioctl(decoder, VIDIOC_DQBUF, &buffer) < 0) {
-					if (errno == EAGAIN) break;
-					perror("DQBUF capture"); goto done;
-				}
-				uint64_t decode_end = monotonic_ns();
-				if (latest_capture >= 0 && queue_capture(decoder,
-					(unsigned int)latest_capture, &capture[latest_capture]) < 0) {
-					perror("QBUF skipped capture"); goto done;
-				}
-				latest_capture = (int)buffer.index;
-				capture[buffer.index].queued = 0;
-				latest_meta = (struct metadata){0};
-				if (metadata_head != metadata_tail)
-					latest_meta = metadata[metadata_head++ % META_COUNT];
-				latest_decode_end_ns = decode_end;
-				++decoded;
-				if (stats.decoder_duration_count < PI_SAMPLE_COUNT && latest_meta.decoder_submit_ns)
-					stats.decoder_durations[stats.decoder_duration_count++] =
-						decode_end - latest_meta.decoder_submit_ns;
-				total_decode_ns += decode_end - decode_start;
-			}
-			if (latest_capture >= 0) {
-				uint64_t commit_start = monotonic_ns();
-				if (set_plane(drmfd, plane_id, crtc_id,
-					capture[latest_capture].framebuffer, DISPLAY_HEIGHT) < 0) {
-					perror("SETPLANE NV12"); goto done;
-				}
-				uint64_t commit_end = monotonic_ns();
-				total_commit_ns += commit_end - commit_start;
-				++presented;
-				++stats.drm_submitted;
-				if (stats.presented_count < PI_SAMPLE_COUNT && latest_meta.receive_ns) {
-					struct pi_present_sample *sample = &stats.presented[stats.presented_count++];
-					sample->receive_to_submit_ns = latest_meta.decoder_submit_ns - latest_meta.receive_ns;
-					sample->decode_ns = latest_decode_end_ns - latest_meta.decoder_submit_ns;
-					sample->decode_to_drm_ns = commit_start - latest_decode_end_ns;
-					sample->drm_submit_ns = commit_end - commit_start;
-					sample->total_ns = commit_end - latest_meta.receive_ns;
-				}
-				if (latest_meta.source_ns) {
-					int64_t relative_age = (int64_t)(commit_end - first_rx_ns) -
-						(int64_t)(latest_meta.source_ns - first_source_ns);
-					if (age_count < META_COUNT) ages[age_count++].value_ns = relative_age;
-					if (presented == 1 || presented % 5 == 0)
-						fprintf(stderr, "frame seq=%llu rx_to_commit_relative_ms=%.3f skipped=%u\n",
-							(unsigned long long)latest_meta.sequence, relative_age / 1000000.0,
-							decoded - presented);
-				}
-				if (old_capture >= 0 && queue_capture(decoder,
-					(unsigned int)old_capture, &capture[old_capture]) < 0) {
-					perror("QBUF old capture"); goto done;
-				}
-				old_capture = latest_capture;
-			}
-		}
+		/* Every decoded frame reaches the bounded presenter.  It coalesces only
+		 * while SETPLANE is genuinely in flight on its dedicated worker. */
+		if (drain_decoded_frames(decoder, capture, metadata, &metadata_head,
+			metadata_tail, &decoded, &total_decode_ns, &stats, &presenter) < 0)
+			goto done;
 		if (frames % 30 == 0)
-			fprintf(stderr, "direct frames received=%u decoded=%u presented=%u dropped=%u input_queue=%u metadata_queue=%u\n",
-				frames, decoded, presented, dropped, frames - decoded,
+			fprintf(stderr, "direct frames received=%u decoded=%u presented=%llu dropped=%u input_queue=%u metadata_queue=%u\n",
+				frames, decoded, (unsigned long long)stats.drm_completed, dropped, frames - decoded,
 				metadata_tail - metadata_head);
 	}
 
@@ -618,47 +824,20 @@ int main(int argc, char **argv)
 		while (metadata_head != metadata_tail && monotonic_ns() < deadline) {
 			struct pollfd wait_fd = {.fd = decoder, .events = POLLIN};
 			if (poll(&wait_fd, 1, 10) <= 0) continue;
-			int latest_capture = -1;
-			struct metadata latest_meta = {0};
-			for (;;) {
-				struct v4l2_plane plane = {0};
-				struct v4l2_buffer buffer = {.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE,
-					.memory = V4L2_MEMORY_MMAP, .length = 1, .m.planes = &plane};
-				if (xioctl(decoder, VIDIOC_DQBUF, &buffer) < 0) {
-					if (errno == EAGAIN) break;
-					perror("DQBUF final capture"); goto done;
-				}
-				if (latest_capture >= 0 && queue_capture(decoder,
-					(unsigned int)latest_capture, &capture[latest_capture]) < 0) {
-					perror("QBUF final skipped capture"); goto done;
-				}
-				latest_capture = (int)buffer.index;
-				capture[buffer.index].queued = 0;
-				latest_meta = (struct metadata){0};
-				if (metadata_head != metadata_tail)
-					latest_meta = metadata[metadata_head++ % META_COUNT];
-				++decoded;
-			}
-			if (latest_capture >= 0) {
-				uint64_t commit_start = monotonic_ns();
-				if (set_plane(drmfd, plane_id, crtc_id,
-					capture[latest_capture].framebuffer, DISPLAY_HEIGHT) < 0) {
-					perror("SETPLANE final NV12"); goto done;
-				}
-				uint64_t commit_end = monotonic_ns();
-				total_commit_ns += commit_end - commit_start;
-				++presented;
-				if (latest_meta.source_ns && age_count < META_COUNT)
-					ages[age_count++].value_ns = (int64_t)(commit_end - first_rx_ns) -
-						(int64_t)(latest_meta.source_ns - first_source_ns);
-				if (old_capture >= 0 && queue_capture(decoder,
-					(unsigned int)old_capture, &capture[old_capture]) < 0) {
-					perror("QBUF final old capture"); goto done;
-				}
-				old_capture = latest_capture;
-			}
+			if (drain_decoded_frames(decoder, capture, metadata, &metadata_head,
+				metadata_tail, &decoded, &total_decode_ns, &stats, &presenter) < 0)
+				goto done;
 		}
 	}
+	if (latest_presenter_stop(&presenter) < 0) {
+		presenter_started = 0;
+		fprintf(stderr, "LatestDecodedFramePresenter failed\n");
+		goto done;
+	}
+	presenter_started = 0;
+	presented = (unsigned int)stats.drm_completed;
+	for (index = 0; index < stats.presented_count; ++index)
+		total_commit_ns += stats.presented[index].drm_submit_ns;
 	if (metadata_head != metadata_tail)
 		fprintf(stderr, "direct end_of_stream pending_decoder_metadata=%u\n",
 			metadata_tail - metadata_head);
@@ -671,13 +850,8 @@ int main(int argc, char **argv)
 			ages[(age_count * 95) / 100 < age_count ? (age_count * 95) / 100 : age_count - 1].value_ns / 1000000.0,
 			ages[age_count - 1].value_ns / 1000000.0);
 	}
-	if (old_capture >= 0 && !no_restore_requested()) {
-		/* Keep production's existing GUD framebuffer and mode in place. */
-		if (set_plane(drmfd, plane_id, crtc_id, 673, DISPLAY_HEIGHT) < 0)
-			perror("restore GUD plane");
-	} else if (old_capture >= 0) {
-		fprintf(stderr, "H264_RECEIVER_NO_RESTORE=1: leaving direct H.264 plane selected\n");
-	}
+	if (presented)
+		fprintf(stderr, "GUD scanout was not restored; H.264 plane will be disabled at teardown\n");
 	getrusage(RUSAGE_SELF, &usage);
 	if (age_count) {
 		sort_samples(ages, age_count);
@@ -695,6 +869,12 @@ int main(int argc, char **argv)
 	result = presented ? EXIT_SUCCESS : EXIT_FAILURE;
 
 done:
+	if (presenter_started) {
+		latest_presenter_stop(&presenter);
+		presenter_started = 0;
+	}
+	if (drmfd >= 0 && disable_plane(drmfd, plane_id) < 0)
+		perror("disable H.264 plane");
 	if (decoder >= 0) {
 		enum v4l2_buf_type output_type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
 		enum v4l2_buf_type capture_type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
@@ -705,6 +885,10 @@ done:
 		for (index = 0; index < CAPTURE_COUNT; ++index) {
 			if (capture[index].framebuffer)
 				xioctl(drmfd, DRM_IOCTL_MODE_RMFB, &capture[index].framebuffer);
+			if (capture[index].handle) {
+				struct drm_gem_close close_handle = {.handle = capture[index].handle};
+				xioctl(drmfd, DRM_IOCTL_GEM_CLOSE, &close_handle);
+			}
 			if (capture[index].dma_fd >= 0) close(capture[index].dma_fd);
 		}
 	}
