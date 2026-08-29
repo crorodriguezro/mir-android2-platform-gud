@@ -1,0 +1,58 @@
+#!/bin/sh
+set -eu
+
+BUS_NAME=${XDISP_BUS_NAME:-org.lomiri.XDisp}
+OBJECT_PATH=/org/lomiri/XDisp
+INTERFACE=org.lomiri.XDisp1
+
+property()
+{
+    busctl get-property "$BUS_NAME" "$OBJECT_PATH" "$INTERFACE" "$1" 2>/dev/null |
+        sed -n 's/^[a-zA-Z0-9][a-zA-Z0-9]* "\(.*\)"$/\1/p; s/^[a-zA-Z0-9][a-zA-Z0-9]* \(true\|false\)$/\1/p; s/^[a-zA-Z0-9][a-zA-Z0-9]* \([0-9][0-9]*\)$/\1/p'
+}
+
+state=$(property State || true)
+device=$(property GudDevice || true)
+identity=$(property GudIdentity || true)
+child_pid=$(property ChildPid || true)
+last_error=$(property LastError || true)
+last_event=$(property LastLifecycleEvent || true)
+
+test -n "$state" || state=unavailable
+test -n "$device" || device=none
+test -n "$identity" || identity=none
+test -n "$child_pid" || child_pid=0
+test -n "$last_error" || last_error=none
+test -n "$last_event" || last_event=startup
+
+case "$state" in
+    connecting) bridge_state=activating ;;
+    active) bridge_state=active ;;
+    disconnecting) bridge_state=stopping ;;
+    recoverable_error|poisoned_transport) bridge_state=error ;;
+    *) bridge_state=idle ;;
+esac
+case "$state" in
+    active) output=active; presenter=active ;;
+    *) output=inactive; presenter=inactive ;;
+esac
+case "$child_pid" in
+    0|'') mirgud=inactive ;;
+    *) mirgud=active ;;
+esac
+case "$device" in
+    none|'') present=no ;;
+    *) present=yes ;;
+esac
+
+printf 'GUD present: %s\n' "$(printf '%s' "$present" | tr '[:lower:]' '[:upper:]')"
+printf 'selected DRM node: %s\n' "$device"
+printf 'GUD identity: %s\n' "$identity"
+printf 'bridge state: %s\n' "$bridge_state"
+printf 'mirgud: %s\n' "$mirgud"
+printf 'virtual output: %s\n' "$output"
+printf 'presenter: %s\n' "$presenter"
+printf 'lifecycle state: %s\n' "$state"
+printf 'child PID: %s\n' "$child_pid"
+printf 'last lifecycle error: %s\n' "$last_error"
+printf 'last lifecycle event: %s\n' "$last_event"

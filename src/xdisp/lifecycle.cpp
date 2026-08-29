@@ -20,10 +20,11 @@ char const* name(State state)
     return "disabled";
 }
 
-Lifecycle::Lifecycle(bool enabled, bool poisoned, LifecycleActions actions) :
+Lifecycle::Lifecycle(bool enabled, bool poisoned, LifecycleActions actions, bool auto_activate) :
     actions{std::move(actions)},
     current{poisoned ? State::poisoned_transport : (enabled ? State::unavailable : State::disabled)},
-    enabled_intent{enabled && !poisoned}
+    enabled_intent{enabled && !poisoned},
+    active_intent{auto_activate && enabled && !poisoned}
 {
 }
 
@@ -137,10 +138,9 @@ void Lifecycle::sink_added()
 void Lifecycle::sink_removed()
 {
     present = false;
-    // A physical removal ends the current activation request.  Reappearance
-    // publishes availability only; the operator must explicitly Activate a
-    // fresh mirgud child after reconnect.
-    active_intent = false;
+    // Removal invalidates the current child and its resources, but does not
+    // clear the service's activation intent. A later add therefore starts a
+    // fresh child automatically; an explicit Deactivate still suppresses it.
     if (current == State::poisoned_transport)
     {
         saw_poisoned_remove = true;
@@ -210,9 +210,10 @@ void Lifecycle::child_exited(ChildResult result, std::string const& reason)
     {
         // The sink may have reappeared while bounded containment was still
         // reaping the old child.  Publish the current availability after the
-        // old child is gone; activation remains explicit because removal
-        // cleared active_intent above.
+        // old child is gone and start the fresh instance if the service still
+        // owns an active request.
         transition(enabled_intent && present ? State::available : disconnect_target, reason);
+        start_if_requested();
         return;
     }
     if (result == ChildResult::unavailable)

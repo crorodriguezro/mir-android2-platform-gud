@@ -206,9 +206,17 @@ unsigned sync_file_count(pid_t pid)
 
 int open_gud_card()
 {
-    for (unsigned card = 0; card != 16; ++card)
+    auto* const directory = opendir("/dev/dri");
+    if (!directory)
+        return -1;
+    int result_fd{-1};
+    while (auto const* entry = readdir(directory))
     {
-        auto const node = std::string{"/dev/dri/card"} + std::to_string(card);
+        if (std::strncmp(entry->d_name, "card", 4) || !entry->d_name[4] ||
+            !std::all_of(entry->d_name + 4, entry->d_name + std::strlen(entry->d_name),
+                [](char c) { return c >= '0' && c <= '9'; }))
+            continue;
+        auto const node = std::string{"/dev/dri/"} + entry->d_name;
         int const fd = open(node.c_str(), O_RDWR | O_CLOEXEC);
         if (fd < 0)
             continue;
@@ -217,10 +225,14 @@ int open_gud_card()
         if (version)
             drmFreeVersion(version);
         if (is_gud)
-            return fd;
+        {
+            result_fd = fd;
+            break;
+        }
         close(fd);
     }
-    return -1;
+    closedir(directory);
+    return result_fd;
 }
 
 uint32_t property(int fd, uint32_t object, uint32_t type, char const* name)

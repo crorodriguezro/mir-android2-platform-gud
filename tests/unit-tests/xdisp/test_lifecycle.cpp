@@ -10,7 +10,7 @@ namespace
 {
 struct Harness
 {
-    Harness(bool enabled = false, bool poisoned = false) :
+    Harness(bool enabled = false, bool poisoned = false, bool auto_activate = false) :
         lifecycle{enabled, poisoned, {
             [this] { ++starts; events.push_back("start"); },
             [this] { ++stops; events.push_back("stop"); },
@@ -18,7 +18,7 @@ struct Harness
             [this](std::string const&) { events.push_back("persist_poison"); },
             [this] { events.push_back("clear_poison"); },
             [this](xdisp::State, xdisp::State next, std::string const&) { events.push_back(xdisp::name(next)); }
-        }}
+        }, auto_activate}
     {
     }
 
@@ -72,30 +72,25 @@ TEST(XdispLifecycle, contained_forced_stop_returns_to_available)
     EXPECT_EQ(xdisp::State::available, h.lifecycle.state());
 }
 
-TEST(XdispLifecycle, detach_requires_explicit_reactivation_after_fresh_add)
+TEST(XdispLifecycle, detach_reactivates_fresh_child_after_fresh_add)
 {
-    Harness h{true};
+    Harness h{true, false, true};
     h.lifecycle.sink_added();
-    h.lifecycle.activate();
     h.lifecycle.child_active();
     h.lifecycle.sink_removed();
     h.lifecycle.child_exited(xdisp::ChildResult::stopped, "detached");
     EXPECT_EQ(xdisp::State::unavailable, h.lifecycle.state());
     EXPECT_EQ(1, h.starts);
     h.lifecycle.sink_added();
-    EXPECT_EQ(1, h.starts);
-    EXPECT_FALSE(h.lifecycle.activation_requested());
-    EXPECT_EQ(xdisp::State::available, h.lifecycle.state());
-    EXPECT_TRUE(h.lifecycle.activate());
     EXPECT_EQ(2, h.starts);
     EXPECT_EQ(xdisp::State::connecting, h.lifecycle.state());
+    EXPECT_TRUE(h.lifecycle.activation_requested());
 }
 
 TEST(XdispLifecycle, readd_during_containment_becomes_available_after_old_child_reaped)
 {
-    Harness h{true};
+    Harness h{true, false, true};
     h.lifecycle.sink_added();
-    h.lifecycle.activate();
     h.lifecycle.child_active();
 
     h.lifecycle.sink_removed();
@@ -105,12 +100,31 @@ TEST(XdispLifecycle, readd_during_containment_becomes_available_after_old_child_
     EXPECT_EQ(xdisp::State::disconnecting, h.lifecycle.state());
 
     h.lifecycle.child_exited(xdisp::ChildResult::stopped, "detached");
-    EXPECT_EQ(xdisp::State::available, h.lifecycle.state());
+    EXPECT_EQ(xdisp::State::connecting, h.lifecycle.state());
+    EXPECT_EQ(2, h.starts);
+}
+
+TEST(XdispLifecycle, auto_activation_is_idempotent)
+{
+    Harness h{true, false, true};
+    h.lifecycle.sink_added();
+    h.lifecycle.sink_added();
+    EXPECT_EQ(1, h.starts);
+    EXPECT_EQ(xdisp::State::connecting, h.lifecycle.state());
+    EXPECT_TRUE(h.lifecycle.activation_requested());
+}
+
+TEST(XdispLifecycle, explicit_deactivate_suppresses_automatic_reconnect)
+{
+    Harness h{true, false, true};
+    h.lifecycle.sink_added();
+    h.lifecycle.deactivate();
+    h.lifecycle.child_exited(xdisp::ChildResult::stopped, "deactivated");
+    h.lifecycle.sink_removed();
+    h.lifecycle.sink_added();
     EXPECT_EQ(1, h.starts);
     EXPECT_FALSE(h.lifecycle.activation_requested());
-
-    EXPECT_TRUE(h.lifecycle.activate());
-    EXPECT_EQ(2, h.starts);
+    EXPECT_EQ(xdisp::State::available, h.lifecycle.state());
 }
 
 TEST(XdispLifecycle, recoverable_error_requires_explicit_retry)

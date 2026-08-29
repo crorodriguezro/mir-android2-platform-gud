@@ -33,6 +33,7 @@ namespace
 {
 constexpr guint default_activation_timeout_seconds = 10;
 constexpr guint diagnostic_activation_timeout_max_seconds = 45;
+constexpr std::size_t max_drm_cards_to_inspect = 64;
 
 guint diagnostic_activation_timeout_seconds()
 {
@@ -79,6 +80,7 @@ char const introspection_xml[] = R"XML(
     <property name="ConnectorId" type="u" access="read"/>
     <property name="ChildPid" type="u" access="read"/>
     <property name="LastError" type="s" access="read"/>
+    <property name="LastLifecycleEvent" type="s" access="read"/>
     <property name="RecoveryObserved" type="b" access="read"/>
     <property name="LastChildExit" type="s" access="read"/>
     <property name="LastStopForced" type="b" access="read"/>
@@ -133,6 +135,16 @@ bool exists(std::string const& path)
     return access(path.c_str(), F_OK) == 0;
 }
 
+bool auto_enabled()
+{
+    // First install is enabled by default so a connected GUD display works
+    // without an operator command. The explicit disabled marker preserves a
+    // user's Disable choice across service restarts; the legacy enabled
+    // marker remains accepted implicitly because its absence was previously
+    // the only way to represent the initial state.
+    return !exists(std::string{state_dir} + "/disabled");
+}
+
 std::string first_line(std::string const& path)
 {
     std::ifstream input{path};
@@ -182,9 +194,15 @@ Candidate probe(udev_device* device)
     auto const* devnode = udev_device_get_devnode(device);
     if (!devnode)
         return result;
+    auto const device_number = udev_device_get_devnum(device);
+    if (!device_number)
+        return result;
     result.fd = open(devnode, O_RDWR | O_CLOEXEC);
     if (result.fd < 0)
         return result;
+    struct stat card_stat{};
+    if (fstat(result.fd, &card_stat) || card_stat.st_rdev != device_number)
+        return {};
     auto* const version = drmGetVersion(result.fd);
     bool const gud = version && version->name && !std::strcmp(version->name, "gud");
     if (version)
@@ -236,8 +254,11 @@ std::vector<Candidate> discover(udev* context)
     udev_enumerate_scan_devices(enumerate.get());
     udev_list_entry* devices = udev_enumerate_get_list_entry(enumerate.get());
     udev_list_entry* entry{};
+    std::size_t inspected{};
     udev_list_entry_foreach(entry, devices)
     {
+        if (inspected++ >= max_drm_cards_to_inspect)
+            break;
         auto device = std::unique_ptr<udev_device, decltype(&udev_device_unref)>{
             udev_device_new_from_syspath(context, udev_list_entry_get_name(entry)), udev_device_unref};
         if (!device || !card_name(udev_device_get_sysname(device.get())))
@@ -254,11 +275,21 @@ class Daemon
 public:
     Daemon() :
         context{udev_new(), udev_unref},
-        lifecycle{exists(std::string{state_dir} + "/enabled"), exists(std::string{state_dir} + "/poisoned"), {
+        lifecycle{auto_enabled(), exists(std::string{state_dir} + "/poisoned"), {
             [this] { start_child(); }, [this] { stop_child(); },
             [](bool value) {
-                auto const path = std::string{state_dir} + "/enabled";
-                if (value) atomic_write(path, "enabled\n"); else unlink(path.c_str());
+                auto const enabled_path = std::string{state_dir} + "/enabled";
+                auto const disabled_path = std::string{state_dir} + "/disabled";
+                if (value)
+                {
+                    atomic_write(enabled_path, "enabled\n");
+                    unlink(disabled_path.c_str());
+                }
+                else
+                {
+                    atomic_write(disabled_path, "disabled\n");
+                    unlink(enabled_path.c_str());
+                }
             },
             [this](std::string const& reason) {
                 atomic_write(std::string{state_dir} + "/poisoned", candidate.identity + "\n" + reason + "\n");
@@ -269,7 +300,7 @@ public:
                     new_state == xdisp::State::poisoned_transport ? reason : std::string{};
                 emit_state(old_state, new_state, reason);
             }
-        }}
+        }, true}
     {
         if (!context)
             throw std::runtime_error{"cannot initialize udev"};
@@ -290,7 +321,6 @@ public:
         g_io_channel_set_close_on_unref(monitor_channel, FALSE);
         monitor_watch = g_io_add_watch(monitor_channel, static_cast<GIOCondition>(G_IO_IN | G_IO_ERR | G_IO_HUP),
             &Daemon::udev_event, this);
-        reconcile_source = g_timeout_add_seconds(2, &Daemon::reconcile_timer, this);
         if (lifecycle.state() != xdisp::State::poisoned_transport)
             reconcile();
         g_main_loop_run(loop);
@@ -313,7 +343,6 @@ public:
         }
         if (kill_source) g_source_remove(kill_source);
         if (activation_source) g_source_remove(activation_source);
-        if (reconcile_source) g_source_remove(reconcile_source);
         if (monitor_watch) g_source_remove(monitor_watch);
         if (monitor_channel) g_io_channel_unref(monitor_channel);
         if (registration && connection) g_dbus_connection_unregister_object(connection, registration);
@@ -420,6 +449,7 @@ private:
         if (!std::strcmp(property, "ConnectorId")) return g_variant_new_uint32(self.candidate.connector);
         if (!std::strcmp(property, "ChildPid")) return g_variant_new_uint32(self.child_pid > 0 ? self.child_pid : 0);
         if (!std::strcmp(property, "LastError")) return g_variant_new_string(self.last_error.c_str());
+        if (!std::strcmp(property, "LastLifecycleEvent")) return g_variant_new_string(self.last_lifecycle_event.c_str());
         if (!std::strcmp(property, "RecoveryObserved")) return g_variant_new_boolean(self.lifecycle.recovery_observed());
         if (!std::strcmp(property, "LastChildExit")) return g_variant_new_string(self.stop_diagnostics.last_child_exit().c_str());
         if (!std::strcmp(property, "LastStopForced")) return g_variant_new_boolean(self.stop_diagnostics.last_stop_forced());
@@ -430,6 +460,8 @@ private:
 
     void emit_state(xdisp::State old_state, xdisp::State new_state, std::string const& reason)
     {
+        last_lifecycle_event = std::string{xdisp::name(new_state)} + ":" +
+            (reason.empty() ? "state change" : reason);
         g_message("xdispd: %s -> %s: %s", xdisp::name(old_state), xdisp::name(new_state), reason.c_str());
         if (!connection)
             return;
@@ -452,6 +484,7 @@ private:
         g_variant_builder_add(&changed, "{sv}", "ConnectorId", g_variant_new_uint32(candidate.connector));
         g_variant_builder_add(&changed, "{sv}", "ChildPid", g_variant_new_uint32(child_pid > 0 ? child_pid : 0));
         g_variant_builder_add(&changed, "{sv}", "LastError", g_variant_new_string(last_error.c_str()));
+        g_variant_builder_add(&changed, "{sv}", "LastLifecycleEvent", g_variant_new_string(last_lifecycle_event.c_str()));
         g_variant_builder_add(&changed, "{sv}", "RecoveryObserved", g_variant_new_boolean(lifecycle.recovery_observed()));
         g_variant_builder_add(&changed, "{sv}", "LastChildExit", g_variant_new_string(stop_diagnostics.last_child_exit().c_str()));
         g_variant_builder_add(&changed, "{sv}", "LastStopForced", g_variant_new_boolean(stop_diagnostics.last_stop_forced()));
@@ -498,27 +531,6 @@ private:
             self.emit_properties();
         }
         else
-            self.reconcile();
-        return TRUE;
-    }
-
-    static gboolean reconcile_timer(gpointer data)
-    {
-        auto& self = *static_cast<Daemon*>(data);
-        auto const state = self.lifecycle.state();
-        if (state == xdisp::State::poisoned_transport && self.poison_remove_observed &&
-            !self.lifecycle.recovery_observed())
-        {
-            auto recovered = discover(self.context.get());
-            if (recovered.size() == 1 && recovered[0].identity == self.poisoned_identity)
-            {
-                self.candidate = std::move(recovered[0]);
-                self.lifecycle.sink_added();
-                self.emit_properties();
-            }
-        }
-        else if (state != xdisp::State::poisoned_transport && state != xdisp::State::connecting &&
-            state != xdisp::State::active && state != xdisp::State::disconnecting)
             self.reconcile();
         return TRUE;
     }
@@ -746,6 +758,7 @@ private:
     Candidate candidate;
     xdisp::Lifecycle lifecycle;
     std::string last_error;
+    std::string last_lifecycle_event{"startup"};
     std::string poisoned_identity;
     xdisp::StopDiagnostics stop_diagnostics;
     GMainLoop* loop{};
@@ -754,7 +767,6 @@ private:
     guint owner{};
     guint registration{};
     guint monitor_watch{};
-    guint reconcile_source{};
     GIOChannel* monitor_channel{};
     pid_t child_pid{};
     guint child_watch{};

@@ -41,7 +41,7 @@ struct LifecycleActions
 class Lifecycle
 {
 public:
-    Lifecycle(bool enabled, bool poisoned, LifecycleActions actions);
+    Lifecycle(bool enabled, bool poisoned, LifecycleActions actions, bool auto_activate = false);
 
     State state() const;
     bool enabled() const;

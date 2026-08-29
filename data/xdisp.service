@@ -4,8 +4,10 @@ After=lightdm.service
 Wants=lightdm.service
 
 [Service]
-Type=dbus
-BusName=org.lomiri.XDisp
+# xdispd owns the D-Bus name and remains resident even when no GUD sink is
+# present. Its udev monitor, rather than a boot-time command sequence, owns
+# discovery and child activation.
+Type=simple
 ExecStart=/usr/libexec/lomiri-xdisp/xdispd
 ExecStartPre=/usr/bin/install -d -m 0700 /home/phablet/.local/share/lomiri-xdisp
 Environment=MIR_CLIENT_PLATFORM_PATH=/usr/lib/aarch64-linux-gnu/mir1/client-platform
