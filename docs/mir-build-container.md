@@ -21,7 +21,9 @@ docker image inspect mir-android2-platform-gud-p02-build:ubuntu24.04-noble
 
 The commands below mount the repository read-only. Build output is written to
 a disposable directory under `/tmp`, so the container cannot modify the
-working tree.
+working tree. This is the supported build path when the workstation lacks the
+matching Mir/Android2 development packages; the host does not need to be an
+ARM64 Ubuntu installation.
 
 ## Quick CMake build
 
@@ -104,6 +106,11 @@ mir1-android2-tests_*_arm64.deb
 
 Debug symbol `.ddeb` files may also be produced.
 
+The 2026-08-29 qualification used this exact package command and completed all
+five Debian test targets with zero failures, including 53 xdisp unit tests.
+The resulting `lomiri-xdisp_1.8.0_arm64.deb` SHA256 was
+`46568f59caad9cff73b02e6ea253dfc2720b29787f427f92c6f6c9f562edaf24`.
+
 ## Verify the artifacts
 
 Use the same image to inspect package contents when the host does not have
@@ -155,3 +162,8 @@ sha256sum "$MIR_GUD_PACKAGE_DIR"/*.deb
   [`gud/docs/oneplus6-usb-host-gud-troubleshooting.md`](../../gud/docs/oneplus6-usb-host-gud-troubleshooting.md)
   and require dynamic enumeration of `1d50:614d` before diagnosing KMS or
   claiming hardware qualification.
+* The phone image used for the hardware run has a read-only dpkg database.
+  Do not install the `.deb` there with `dpkg -i`; stage the rebuilt binaries
+  and service override in a recoverable `/home/phablet/` location, or use a
+  writable development image. The qualification report records both the
+  package build and the staged-runtime paths.
